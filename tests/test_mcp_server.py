@@ -119,3 +119,28 @@ def test_get_procedure_returns_the_packaged_skill():
     result = mcp_server.get_procedure()
     assert "procedure" in result
     assert "Never ask for a page" in result["procedure"]
+
+
+def test_device_table_returns_the_devices_csv_columns():
+    """The preview must match the deliverable exactly, or the agent shows a table that
+    cannot be diffed against the file."""
+    from prodscrape.export import CORE_COLUMNS
+
+    result = mcp_server.device_table("binder-world.com", limit=3)
+    if not result["rows"]:
+        return  # no run present in this environment
+    assert result["columns"] == list(CORE_COLUMNS)
+    assert set(result["rows"][0]) == set(CORE_COLUMNS)
+    assert result["csv_path"].endswith("devices.csv")
+
+
+def test_device_table_summarises_specs_by_default():
+    result = mcp_server.device_table("binder-world.com", limit=3)
+    if not result["rows"]:
+        return
+    assert result["specs_included"] is False
+    assert result["rows"][0]["specs"].endswith("keys")
+
+    full = mcp_server.device_table("binder-world.com", limit=3, include_specs=True)
+    assert full["specs_included"] is True
+    assert full["rows"][0]["specs"].startswith("{")

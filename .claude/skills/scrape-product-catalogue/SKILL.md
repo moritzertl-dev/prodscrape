@@ -108,16 +108,36 @@ instrument. If a queue is large and full of plausible device names, that is a **
 bug to report, not a backlog to adjudicate**. Verdict `device` promotes the row into the
 table even without specs.
 
-### 7. Deliver — `device_table`, `device_specs`, `export_table`
+### 7. Deliver — **show `devices.csv`**
 
-`export_table(domain, category=...)` also writes a pivoted per-category view, promoting
-that category's common attributes into real columns. It reads the same extracted data, so
-it never needs a re-scrape.
+`devices.csv` is the deliverable. It is what the whole pipeline exists to produce, so
+**show it, and show it as it actually is.**
+
+- Call `device_table` and present the rows in its real columns:
+  `product_id, manufacturer, name, category, url, interfaces, description, image_url,
+  datasheet_urls, specs`.
+- Do not invent a different column set, reorder it, or substitute a summary of your own
+  design. The file is deterministic; a table that looks different every run is a table
+  nobody can diff, and the person reading it cannot tell a real change from a formatting
+  one.
+- Show a substantial sample — 20-30 rows — not three. If the catalogue is larger, say how
+  many rows there are in total and offer the rest.
+- Give `csv_path` as well, so the file can be opened directly.
+- `specs` comes back as a key count. That is deliberate: the full bags cost ~13,000
+  tokens for 25 rows and are unreadable in chat. Pass `include_specs=True` only when the
+  specifications themselves are the question, and say that you did.
+
+`device_specs(domain, name)` gives every specification of one device when someone asks
+about a particular one. `export_table(domain, category=...)` additionally writes a pivoted
+per-category view, promoting that category's common attributes into real columns — that
+one *is* a different shape on purpose, so label it as such rather than letting it be
+mistaken for `devices.csv`.
 
 ## Reading the output honestly
 
-- `devices.csv` — one row per device: core columns plus a `specs` JSON bag. **Devices
-  only**; no scrape metadata.
+- `devices.csv` — **the deliverable.** One row per device: core columns plus a `specs`
+  JSON bag. Devices only; no scrape metadata. Its columns are fixed and do not vary
+  between vendors or runs — only the contents of the `specs` bag do.
 - `specs_eav.csv` — the lossless master, one row per (device, attribute), every value with
   its raw source text.
 - `review_queue.csv` — held for judgment, never deleted.
@@ -135,9 +155,10 @@ explicitly in your summary so it can be added rather than re-discovered.
 
 ## What to tell the user
 
-Give counts, the review-queue size, and anything you could not resolve. Do not present a
-number as verified when it rests on a rule you guessed at — say which recipe fields you
-inferred and which you confirmed against the tree.
+Lead with the table itself — `devices.csv`, in its real columns — not with a narrative
+about the run. The counts, the review-queue size and anything you could not resolve come
+after it. Do not present a number as verified when it rests on a rule you guessed at: say
+which recipe fields you inferred and which you confirmed against the tree.
 
 Close with the cost: the estimate you gave at the start and the measured figure from
 `cost_report`, stated as tokens and dollars, with the caveat that it excludes your own

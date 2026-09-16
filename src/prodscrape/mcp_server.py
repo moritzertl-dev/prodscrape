@@ -281,30 +281,57 @@ def record_reviews(domain: str, verdicts: list[dict]) -> dict:
 
 
 @mcp.tool()
-def device_table(domain: str, limit: int = 25, category: str | None = None) -> dict:
-    """Preview the finished table: core columns per device, specs summarised by count.
+def device_table(
+    domain: str,
+    limit: int = 25,
+    category: str | None = None,
+    include_specs: bool = False,
+) -> dict:
+    """The finished table — `devices.csv`, in its real columns. This is the deliverable.
 
-    Use `export_table` for the full file path; this is for looking, not bulk transfer.
+    Present these rows in these columns. The column set is fixed and identical for every
+    vendor and every run, so a reader can diff two runs; do not reorder it or substitute
+    a column set of your own.
+
+    `specs` is summarised as a key count by default, because the full bags cost about
+    13,000 tokens for 25 rows and are unreadable in chat regardless. Set
+    `include_specs=True` when the specifications themselves are the question, or use
+    `device_specs` for one device. The CSV at `csv_path` always holds the full bags.
     """
-    rows = _read_jsonl(_run_dir(domain) / "extracted.jsonl")
-    rows = [r for r in rows if r["specs"]]
+    from .export import CORE_COLUMNS
+
+    rows = [r for r in _read_jsonl(_run_dir(domain) / "extracted.jsonl") if r["specs"]]
     if category:
         rows = [r for r in rows if r["category"] == category]
-    preview = [
-        {
+
+    out = []
+    for r in rows[:limit]:
+        row = {
+            "product_id": r["product_id"],
+            "manufacturer": r["manufacturer"],
             "name": r["name"],
             "category": r["category"],
-            "interfaces": r["interfaces"],
-            "spec_count": len(r["specs"]),
             "url": r["url"],
+            "interfaces": "; ".join(r["interfaces"]),
+            "description": r["description"][:160],
+            "image_url": r["image_url"],
+            "datasheet_urls": "; ".join(r["datasheet_urls"][:2]),
         }
-        for r in rows[:limit]
-    ]
+        row["specs"] = (
+            json.dumps({k: v.get("raw") for k, v in r["specs"].items()}, ensure_ascii=False)
+            if include_specs
+            else f"{len(r['specs'])} keys"
+        )
+        out.append(row)
+
     return {
+        "columns": list(CORE_COLUMNS),
         "total_devices": len(rows),
-        "returned": len(preview),
+        "returned": len(out),
         "categories": sorted({r["category"] for r in rows}),
-        "rows": preview,
+        "csv_path": str(_run_dir(domain) / "devices.csv"),
+        "specs_included": include_specs,
+        "rows": out,
     }
 
 
