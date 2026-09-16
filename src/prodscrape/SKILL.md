@@ -108,30 +108,22 @@ instrument. If a queue is large and full of plausible device names, that is a **
 bug to report, not a backlog to adjudicate**. Verdict `device` promotes the row into the
 table even without specs.
 
-### 7. Deliver — **show `devices.csv`**
+### 7. Deliver — `open_device_table(domain)`
 
-`devices.csv` is the deliverable. It is what the whole pipeline exists to produce, so
-**show it, and show it as it actually is.**
+Call it. It opens `devices.csv` as a sortable, searchable page in the browser — filter by
+name, category, interface or specification, expand any device's full spec bag.
 
-- Call `device_table` and present the rows in its real columns:
-  `product_id, manufacturer, name, category, url, interfaces, description, image_url,
-  datasheet_urls, specs`.
-- Do not invent a different column set, reorder it, or substitute a summary of your own
-  design. The file is deterministic; a table that looks different every run is a table
-  nobody can diff, and the person reading it cannot tell a real change from a formatting
-  one.
-- Show a substantial sample — 20-30 rows — not three. If the catalogue is larger, say how
-  many rows there are in total and offer the rest.
-- Give `csv_path` as well, so the file can be opened directly.
-- `specs` comes back as a key count. That is deliberate: the full bags cost ~13,000
-  tokens for 25 rows and are unreadable in chat. Pass `include_specs=True` only when the
-  specifications themselves are the question, and say that you did.
+**Do not print the table into the conversation.** Rows in chat wrap, cannot be sorted, and
+cost thousands of tokens to say less than the page says for free.
 
-`device_specs(domain, name)` gives every specification of one device when someone asks
-about a particular one. `export_table(domain, category=...)` additionally writes a pivoted
-per-category view, promoting that category's common attributes into real columns — that
-one *is* a different shape on purpose, so label it as such rather than letting it be
-mistaken for `devices.csv`.
+Then report, in one or two lines: how many devices, how many held for review, and the
+path. Nothing else — no restatement of what you just did, no walkthrough of the pipeline,
+no summary of the summary. If something went wrong or a rule was guessed, say that
+instead; it is the only thing worth spending words on.
+
+`device_table` returns rows as data if you need to reason over them. `device_specs` gives
+one device's specifications. `export_table(domain, category=...)` writes a pivoted
+per-category view — a different shape on purpose, so label it as such.
 
 ## Reading the output honestly
 
@@ -155,12 +147,13 @@ explicitly in your summary so it can be added rather than re-discovered.
 
 ## What to tell the user
 
-Lead with the table itself — `devices.csv`, in its real columns — not with a narrative
-about the run. The counts, the review-queue size and anything you could not resolve come
-after it. Do not present a number as verified when it rests on a rule you guessed at: say
-which recipe fields you inferred and which you confirmed against the tree.
+**Be brief.** The page is the output; your message is not a report about it.
 
-Close with the cost: the estimate you gave at the start and the measured figure from
-`cost_report`, stated as tokens and dollars, with the caveat that it excludes your own
-context. If the two diverge a lot, say why — usually the escalation rate for this vendor
-differed from the 30% planning assumption.
+Say: device count, review-queue count, the path, and the measured cost from `cost_report`
+with the note that it excludes your own context. Then anything genuinely unresolved —
+which recipe fields you guessed rather than confirmed, a vendor quirk worth recording in
+`NOTES.md`, a queue that looks like a parsing bug.
+
+Do not restate the steps you ran, do not summarise the table you just opened, and do not
+list what each artifact contains. Every one of those costs tokens to tell the person
+something they can see.

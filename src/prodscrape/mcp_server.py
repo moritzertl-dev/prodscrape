@@ -336,6 +336,43 @@ def device_table(
 
 
 @mcp.tool()
+def open_device_table(domain: str, open_browser: bool = True) -> dict:
+    """Open `devices.csv` as a browsable, sortable, searchable page. **The deliverable.**
+
+    Use this instead of printing rows into the conversation. It renders the same data as
+    `devices.csv` — filter by name, category, interface or specification, sort any
+    column, expand a device's full spec bag — and opens it in the default browser.
+
+    Costs almost no tokens: the table goes to the screen, not through the context.
+    Report the row count and the path, and stop there.
+    """
+    from .view import write_and_open
+
+    out = _run_dir(domain)
+    records = _read_jsonl(out / "extracted.jsonl")
+    if not records:
+        return {"error": f"no extraction for {domain}; run extract_devices first"}
+
+    path, opened = write_and_open(
+        records,
+        domain=domain,
+        csv_path=str(out / "devices.csv"),
+        out_path=out / "devices.html",
+        open_it=open_browser,
+    )
+    return {
+        "devices": sum(1 for r in records if r["specs"]),
+        "view": str(path),
+        "opened_in_browser": opened,
+        "csv": str(out / "devices.csv"),
+        "note": (
+            "opened in the default browser" if opened
+            else "written but not opened — open the path above manually"
+        ),
+    }
+
+
+@mcp.tool()
 def device_specs(domain: str, name: str) -> dict:
     """Every specification of one device, with raw source text preserved."""
     for row in _read_jsonl(_run_dir(domain) / "extracted.jsonl"):

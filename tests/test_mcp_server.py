@@ -144,3 +144,31 @@ def test_device_table_summarises_specs_by_default():
     full = mcp_server.device_table("binder-world.com", limit=3, include_specs=True)
     assert full["specs_included"] is True
     assert full["rows"][0]["specs"].startswith("{")
+
+
+def test_open_device_table_writes_a_self_contained_page(tmp_path, monkeypatch):
+    """The view must work offline and when mailed onward — no CDN, no network."""
+    from prodscrape.view import render
+
+    records = [{
+        "name": "Widget 900", "category": "mixers", "url": "https://x.test/w",
+        "description": "A mixer.", "interfaces": ["Ethernet", "RS-232"],
+        "datasheet_urls": ["https://x.test/w.pdf"], "image_url": "",
+        "specs": {"temperature_range": {"raw": "5 to 70 C"}},
+    }]
+    page = render(records, domain="x.test", csv_path="/tmp/devices.csv")
+    assert "Widget 900" in page and "5 to 70 C" in page
+    head = page.split("</head>")[0]
+    assert "http://" not in head and "https://" not in head   # no external assets
+
+
+def test_open_device_table_reports_when_it_could_not_open(tmp_path):
+    """A headless environment is not an error — the file is still written."""
+    from prodscrape.view import write_and_open
+
+    path, opened = write_and_open(
+        [], domain="x.test", csv_path="c.csv",
+        out_path=tmp_path / "devices.html", open_it=False,
+    )
+    assert path.exists()
+    assert opened is False

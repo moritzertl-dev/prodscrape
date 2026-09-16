@@ -15,6 +15,7 @@ assumes only that a vendor publishes product pages with specification tables.
 | file | contents |
 |---|---|
 | `devices.csv` | one row per device — core columns plus a `specs` JSON bag |
+| `devices.html` | a sortable, searchable view of the same data, opened in your browser |
 | `specs_eav.csv` | the lossless master: one row per (device, attribute), every value with its raw source text |
 | `review_queue.csv` | rows that need a human or agent verdict, never silently dropped |
 | `extracted.jsonl` | everything, including provenance and merge reasoning |
@@ -33,7 +34,7 @@ including the config block and troubleshooting: [`SETUP.md`](SETUP.md).
 From a checkout:
 
 ```bash
-uv sync && uv run pytest -q     # 127 tests, fully offline
+uv sync && uv run pytest -q     # 131 tests, fully offline
 uv run prodscrape tree <domain>
 ```
 
