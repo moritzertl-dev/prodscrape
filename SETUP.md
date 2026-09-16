@@ -22,13 +22,21 @@ First run takes ~30s while it builds; after that it is cached and instant. You s
 
 ### Claude Desktop
 
-Edit (or create) this file:
+**Use Settings → Developer → Edit Config.** It opens the correct file for your install,
+which is the only reliable way to find it — the location depends on how Desktop was
+installed:
 
-```
-%APPDATA%\Claude\claude_desktop_config.json
-```
+| install | config path |
+|---|---|
+| normal installer | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Microsoft Store (MSIX) | `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json` |
 
-which expands to `C:\Users\<you>\AppData\Roaming\Claude\claude_desktop_config.json`.
+The Store build runs containerised, so `%APPDATA%` is redirected and the obvious path does
+not exist at all. If you go looking by hand and find nothing, that is why — not because
+Desktop is missing.
+
+**Quit Desktop before editing.** It rewrites this file itself, so a change made while it
+is running can be overwritten when it exits.
 
 ```json
 {
@@ -45,8 +53,27 @@ which expands to `C:\Users\<you>\AppData\Roaming\Claude\claude_desktop_config.js
 }
 ```
 
-If the file already exists, **merge** the `prodscrape` entry into the existing
-`mcpServers` object — do not replace the file, or you will drop your other servers.
+This file also holds all your Desktop preferences, so **merge — do not replace.**
+`mcpServers` is a *key inside* the existing top-level object:
+
+```text
+{
+  "coworkUserFilesPath": "...",
+  "preferences": { ... },
+  "mcpServers": { "prodscrape": { ... } }
+}
+```
+
+The easy mistake is pasting the snippet after the closing brace, which produces two
+objects side by side and invalid JSON — Desktop then silently ignores the file:
+
+```text
+  },
+  {                          <- wrong: this starts a second object
+  "mcpServers": { ... }
+}
+}                            <- one brace too many
+```
 
 Then **quit Claude Desktop completely** — tray icon → Quit, not just closing the window —
 and reopen it. The 14 tools appear under the tools icon in the chat box.
@@ -129,17 +156,16 @@ it always has.
 
 ## Troubleshooting
 
-**Tools do not appear in Desktop.** Almost always `uv` is not on the PATH that Desktop
-sees. Use the absolute path:
+**Tools do not appear in Desktop.** Usually `uvx` is not on the PATH that Desktop sees —
+more likely on the Store build, which is containerised. Use the absolute path; find yours
+with `where uvx`:
 
 ```json
 {
   "mcpServers": {
     "prodscrape": {
-      "command": "C:\\Users\\moritz ertl\\.local\\bin\\uv.exe",
+      "command": "C:\\Users\\moritz ertl\\.local\\bin\\uvx.exe",
       "args": [
-        "tool",
-        "run",
         "--from",
         "git+https://github.com/moritzertl-dev/prodscrape",
         "prodscrape-mcp"
@@ -149,8 +175,15 @@ sees. Use the absolute path:
 }
 ```
 
-(`uv tool run` is the same thing as `uvx`; the absolute path avoids the PATH problem.
-Find yours with `where uv` in a terminal.)
+**First launch is slow.** `uvx` builds the environment the first time (~30s). Desktop may
+time out that handshake; quit and reopen once and it will be cached and instant.
+
+**Config looks right but nothing loads.** Validate it — one stray brace makes Desktop
+ignore the whole file silently:
+
+```bash
+python -c "import json;json.load(open(r'<path to claude_desktop_config.json>'))"
+```
 
 **Check the log:** `%APPDATA%\Claude\logs\mcp-server-prodscrape.log`
 
