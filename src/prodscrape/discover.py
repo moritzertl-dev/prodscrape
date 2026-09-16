@@ -47,6 +47,7 @@ class SiteProfile:
     urls: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     crawled: bool = False
+    blocked: bool = False
 
     @property
     def sitemap_declared_in_robots(self) -> bool:
@@ -131,6 +132,35 @@ def extract_links(html: str, page_url: str, base_netloc: str) -> list[str]:
     return out
 
 
+# Path fragments that suggest a catalogue. Used only to *order* the crawl, never to
+# exclude anything — a wrong guess costs ordering, not coverage.
+CATALOGUE_HINTS = (
+    "product", "produkt", "produit", "producto", "prodotto",
+    "shop", "catalog", "katalog", "catalogue",
+    "instrument", "geraet", "equipment", "portfolio", "range", "sortiment",
+)
+EDITORIAL_HINTS = (
+    "news", "press", "blog", "career", "job", "event", "story", "about",
+    "contact", "legal", "privacy", "imprint", "impressum", "webinar",
+    "download", "support", "service", "login", "account", "cart", "search",
+)
+
+
+def crawl_priority(url: str) -> int:
+    """Lower sorts first. Catalogue-looking paths are crawled before editorial ones.
+
+    With a bounded crawl the ordering decides what you end up with: a plain FIFO spends
+    its budget on whatever the homepage happened to link first, which on most vendor
+    sites is news and legal pages.
+    """
+    path = urlparse(url).path.lower()
+    if any(h in path for h in CATALOGUE_HINTS):
+        return 0
+    if any(h in path for h in EDITORIAL_HINTS):
+        return 2
+    return 1
+
+
 def crawl_site(
     base: str,
     fetcher: Fetcher,
@@ -138,19 +168,21 @@ def crawl_site(
     max_pages: int = 250,
     max_depth: int = 4,
 ) -> tuple[list[dict], list[str]]:
-    """Breadth-first crawl fallback for sites with no usable sitemap.
+    """Crawl fallback for sites with no usable sitemap.
 
-    Bounded by ``max_pages`` and ``max_depth`` so a bad site cannot run away with the
-    run. Returns ``(urls, errors)``; URLs carry the depth they were found at.
+    Breadth-first, but ordered by ``crawl_priority`` within each depth so a bounded run
+    spends its budget on catalogue branches. Bounded by ``max_pages`` and ``max_depth``
+    so a bad site cannot run away with the run.
     """
     base_netloc = urlparse(base).netloc
-    queue: list[tuple[str, int]] = [(base + "/", 0)]
+    queue: list[tuple[int, int, str]] = [(0, 0, base + "/")]   # (depth, priority, url)
     seen: set[str] = {base + "/"}
     found: list[dict] = []
     errors: list[str] = []
 
     while queue and len(found) < max_pages:
-        url, depth = queue.pop(0)
+        queue.sort(key=lambda item: (item[0], item[1]))
+        depth, _, url = queue.pop(0)
         try:
             rec, html = fetcher.get(url)
         except Exception as exc:
@@ -165,9 +197,18 @@ def crawl_site(
         for link in extract_links(html, rec.final_url, base_netloc):
             if link not in seen:
                 seen.add(link)
-                queue.append((link, depth + 1))
+                queue.append((depth + 1, crawl_priority(link), link))
 
+    if queue:
+        errors.append(
+            f"crawl stopped at the {max_pages}-page budget with {len(queue)} URLs "
+            f"still queued — coverage is partial"
+        )
     return found, errors
+
+
+def base_host_note(domain: str, status: int, used: str) -> str:
+    return f"{domain} answered {status} on the bare host; using {used} instead"
 
 
 def detect_platform(html: str) -> str | None:
@@ -184,6 +225,7 @@ def discover_site(
     max_sitemaps: int = 50,
     crawl_fallback: bool = True,
     max_crawl_pages: int = 250,
+    max_urls: int = 50_000,
 ) -> SiteProfile:
     """Stage 0 entry point. Builds a SiteProfile with every URL the site advertises."""
     base = domain if domain.startswith("http") else f"https://{domain}"
@@ -196,11 +238,41 @@ def discover_site(
     # The requested domain stays the run's identity; only the fetch base moves.
     try:
         rec, home = fetcher.get(base + "/")
+
+        # Not every vendor redirects the bare host to www. retsch.com answers 404 on
+        # retsch.com and serves the site only on www.retsch.com, so following redirects
+        # is not enough — the other host variant has to be tried explicitly.
+        if rec.status >= 400:
+            netloc = urlparse(base).netloc
+            alternate = (
+                f"https://{netloc[4:]}" if netloc.startswith("www.")
+                else f"https://www.{netloc}"
+            )
+            try:
+                alt_rec, alt_home = fetcher.get(alternate + "/")
+                if alt_rec.status < 400:
+                    base, rec, home = alternate, alt_rec, alt_home
+                    profile.errors.append(
+                        f"{base_host_note(profile.domain, rec.status, alternate)}"
+                    )
+            except Exception:
+                pass
+
         final = urlparse(rec.final_url)
         if final.netloc and final.netloc != urlparse(base).netloc:
             base = f"{final.scheme}://{final.netloc}"
         profile.base_url = base
         profile.platform = detect_platform(home)
+        # A 403 on the homepage after the browser-UA retry means bot protection, not a
+        # missing sitemap. Crawling will fail the same way, so say so plainly rather
+        # than returning an empty result that looks like an empty site.
+        if rec.status in (401, 403, 406, 429):
+            profile.blocked = True
+            profile.errors.append(
+                f"homepage returned {rec.status} even with a browser User-Agent — "
+                f"the site blocks automated access; scraping it is not possible "
+                f"without measures this tool does not implement"
+            )
     except Exception as exc:
         profile.errors.append(f"homepage: {type(exc).__name__}: {exc}")
 
@@ -250,9 +322,18 @@ def discover_site(
                 profile.urls.append(
                     {"url": e["loc"], "source": sm_url, "lastmod": e["lastmod"]}
                 )
+        # A URL budget, because some catalogues are effectively unbounded: thermofisher.com
+        # declares several sitemap indexes including an antibody catalogue, and walking
+        # them all never finishes. Stopping loudly beats grinding silently.
+        if len(profile.urls) >= max_urls:
+            profile.errors.append(
+                f"stopped at the {max_urls:,}-URL budget with {len(queue)} sitemaps "
+                f"unread — narrow the scope with a recipe, or raise max_urls"
+            )
+            break
 
     # No usable sitemap anywhere: fall back to a bounded breadth-first crawl.
-    if not profile.urls and crawl_fallback:
+    if not profile.urls and crawl_fallback and not profile.blocked:
         crawled, crawl_errors = crawl_site(
             profile.base_url, fetcher, max_pages=max_crawl_pages
         )

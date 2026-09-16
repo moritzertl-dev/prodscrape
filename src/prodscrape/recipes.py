@@ -35,8 +35,14 @@ DEFAULT_EXCLUDES = (
 )
 
 LOCALE_SEGMENTS = {
-    "en", "de", "fr", "es", "it", "nl", "pt", "ja", "zh", "ko", "pl", "cs", "ru",
-    "en-us", "en-gb", "de-de", "us", "uk", "eu",
+    # language codes
+    "en", "de", "fr", "es", "it", "nl", "pt", "ja", "zh", "ko", "pl", "cs", "cz",
+    "ru", "bg", "hu", "ro", "sk", "sl", "hr", "tr", "sv", "da", "fi", "no", "el",
+    "uk", "ua", "th", "vi", "id", "ar", "he",
+    # region and language-region forms
+    "us", "eu", "int", "global", "row",
+    "en-us", "en-gb", "de-de", "de-at", "de-ch", "fr-fr", "es-es", "it-it",
+    "int-en", "int-es", "us-en", "uk-en", "pl-pl", "fr-ch",
 }
 
 
@@ -152,38 +158,46 @@ def infer_rules(urls: list[str], domain: str) -> Recipe:
     above them.
     """
     notes: list[str] = []
-    roots: Counter[str] = Counter()
-    locale_hits: Counter[str] = Counter()
+
+    # Choose the catalogue prefix as a whole path, not a locale and a root picked
+    # independently. Retsch translates its path segments per locale — /bg/products/ but
+    # /de/produkte/ — so combining the commonest locale with the commonest root produced
+    # /de/products/, a path that exists nowhere on the site.
+    catalogue_prefixes: Counter[str] = Counter()
+    fallback_prefixes: Counter[str] = Counter()
 
     for url in urls:
-        segs = path_segments(url)
-        if segs and segs[0].lower() in LOCALE_SEGMENTS:
-            locale_hits[segs[0].lower()] += 1
-        segs = _strip_locale(segs)
-        if segs:
-            roots[segs[0].lower()] += 1
+        segs = [s.lower() for s in path_segments(url)]
+        if not segs:
+            continue
+        body = _strip_locale(segs)
+        if not body:
+            continue
+        lead = segs[: len(segs) - len(body)]          # the locale prefix, if any
+        if body[0] in PRODUCT_PATH_TOKENS:
+            catalogue_prefixes["/" + "/".join(lead + [body[0]])] += 1
+        elif body[0] not in DEFAULT_EXCLUDES:
+            fallback_prefixes["/" + "/".join(lead + [body[0]])] += 1
 
-    locale = locale_hits.most_common(1)[0][0] if locale_hits else None
-    prefix_parts = [locale] if locale else []
-
-    # Prefer a recognised catalogue token; otherwise fall back to the biggest branch that
-    # is not obviously editorial.
-    candidates = [r for r in roots if r in PRODUCT_PATH_TOKENS]
-    if candidates:
-        root = max(candidates, key=lambda r: roots[r])
-        notes.append(f"catalogue root {root!r} matched a known product path token")
-    else:
-        viable = [r for r in roots if r not in DEFAULT_EXCLUDES and r]
-        if not viable:
-            return Recipe(domain=domain, inferred=True,
-                          notes=["could not identify a product branch from URL structure"])
-        root = max(viable, key=lambda r: roots[r])
+    if catalogue_prefixes:
+        root_path, hits = catalogue_prefixes.most_common(1)[0]
+        notes.append(
+            f"catalogue prefix {root_path!r} matched a known product path token "
+            f"({hits} URLs)"
+        )
+    elif fallback_prefixes:
+        root_path, hits = fallback_prefixes.most_common(1)[0]
         notes.append(
             f"no standard product path token found; guessed largest non-editorial "
-            f"branch {root!r} ({roots[root]} URLs) — verify this"
+            f"branch {root_path!r} ({hits} URLs) — verify this"
         )
+    else:
+        return Recipe(domain=domain, inferred=True,
+                      notes=["could not identify a product branch from URL structure"])
 
-    root_path = "/" + "/".join(prefix_parts + [root])
+    first = root_path.strip("/").split("/")[0]
+    locale = first if first in LOCALE_SEGMENTS else None
+    prefix_parts = [locale] if locale else []
     hist = depth_histogram(urls, prefix=root_path + "/")
     deep = {d: len(v) for d, v in hist.items() if d >= len(prefix_parts) + 2}
     if not deep:

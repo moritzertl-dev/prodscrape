@@ -20,6 +20,17 @@ import httpx
 
 USER_AGENT = "prodscrape/0.1 (+product catalogue research; contact via site owner)"
 
+# Some vendors reject any non-browser User-Agent outright — ika.com returns 403 on its
+# own declared sitemap. Retrying once with a browser UA is the difference between the
+# tool working and not working on those sites.
+#
+# robots.txt is still parsed and obeyed under both agents: this changes how we identify,
+# never what we are permitted to fetch. A page the site disallows stays disallowed.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+)
+
 _META_CHARSET_RE = re.compile(rb"""<meta[^>]*charset=["']?([A-Za-z0-9_-]+)""", re.I)
 
 
@@ -109,6 +120,7 @@ class Fetcher:
         self.respect_robots = respect_robots
         self._last_request: dict[str, float] = {}
         self._robots: dict[str, robotparser.RobotFileParser | None] = {}
+        self.ua_fallbacks: list[str] = []   # URLs that needed the browser User-Agent
         self._client = httpx.Client(
             headers={"User-Agent": USER_AGENT},
             follow_redirects=True,
@@ -163,6 +175,13 @@ class Fetcher:
 
         self._throttle(url)
         resp = self._client.get(url)
+        if resp.status_code in (403, 406, 429):
+            # Identify as a browser once, then fall back. Still inside robots.txt.
+            self._throttle(url)
+            retry = self._client.get(url, headers={"User-Agent": BROWSER_USER_AGENT})
+            if retry.status_code < 400:
+                self.ua_fallbacks.append(url)
+                resp = retry
         content_type = resp.headers.get("Content-Type", "")
         text, encoding = _decode(resp.content, content_type)
         sha = hashlib.sha256(resp.content).hexdigest()

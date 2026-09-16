@@ -19,17 +19,35 @@ from selectolax.parser import HTMLParser
 from .devices import group_devices
 from .normalize import SpecValue, attribute_key, parse_spec_value
 from .recipes import Recipe
-from .signals import SPEC_HEADINGS
+from .signals import SPEC_HEADINGS, looks_like_date
 from .tables import _row_cells, detect_orientation, to_spec_table
 
-# Tables that look structurally like spec tables but are not.
-NON_SPEC_HEADERS = (
-    ("title", "language", "info"),
-    ("order number", "description"),
-    ("category", "description", "status"),
-    ("product", "required", "included"),
-    ("designation", "order number"),
-)
+# Words that mark a table as something other than specifications, in the languages the
+# tool supports. Matched against header cells individually, so this generalises across
+# vendors instead of encoding one vendor's exact header tuples.
+# Words that alone prove a table is not a specification table. These never appear as a
+# spec attribute name.
+STRONG_NON_SPEC_WORDS = {
+    "language", "sprache", "langue", "idioma", "lingua",
+    "download", "downloads", "brochure", "brochures", "flyer",
+    "filesize", "cookie", "consent", "provider", "expiry",
+}
+
+# Words that merely *suggest* it. A real attribute can legitimately be called "Sample
+# size", "File format" or "Status", and in a variant-major table row 0 holds attribute
+# names — so a single weak word here once rejected 39 genuine Analytik Jena spec tables.
+# Only a narrow table carrying two or more of them is treated as non-spec.
+WEAK_NON_SPEC_WORDS = {
+    "info", "size", "format", "status", "file", "datasheet",
+    "required", "included", "optional", "accessory", "accessories",
+    "price", "preis", "prix", "precio", "availability", "stock",
+    "description", "title", "order",
+}
+WEAK_WORD_MAX_COLUMNS = 4
+
+# Two-letter language codes in a column mean a downloads table, whatever it is titled.
+LANGUAGE_CODE_RE = re.compile(r"^(?:de|en|fr|es|it|nl|pt|pl|cs|ru|zh|ja|ko)$", re.I)
+FILE_SIZE_RE = re.compile(r"^\s*(?:pdf|docx?|xlsx?|zip)[, ]+.*\d+\s*[kmg]b\s*$", re.I)
 
 # Connectivity is first-class for the landscape/integration use case, so interfaces are
 # pulled from the whole page rather than only the spec table.
@@ -94,8 +112,35 @@ class DeviceRecord:
 
 
 def _looks_like_non_spec(grid: list[list[str]]) -> bool:
-    header = tuple(c.strip().lower() for c in grid[0][:3])
-    return any(all(h in header for h in bad[: len(header)]) for bad in NON_SPEC_HEADERS)
+    """Whether a table is a downloads / order / cookie list rather than specifications.
+
+    Structural, not vendor-specific: a non-spec header word, a column of language codes,
+    or a column of file-size strings each settle it on any site in any of the supported
+    languages.
+    """
+    header_words = {
+        word
+        for cell in grid[0]
+        for word in re.split(r"[^a-zä-ÿ]+", cell.strip().lower())
+        if word
+    }
+    if header_words & STRONG_NON_SPEC_WORDS:
+        return True
+    if (
+        len(grid[0]) <= WEAK_WORD_MAX_COLUMNS
+        and len(header_words & WEAK_NON_SPEC_WORDS) >= 2
+    ):
+        return True
+
+    for col in range(len(grid[0])):
+        cells = [r[col].strip() for r in grid[1:] if col < len(r) and r[col].strip()]
+        if len(cells) < 2:
+            continue
+        if sum(1 for c in cells if LANGUAGE_CODE_RE.match(c)) >= len(cells) * 0.6:
+            return True
+        if sum(1 for c in cells if FILE_SIZE_RE.match(c)) >= len(cells) * 0.6:
+            return True
+    return False
 
 
 def tables_with_headings(html: str) -> list[tuple[str, list[list[str]]]]:
@@ -120,7 +165,11 @@ def tables_with_headings(html: str) -> list[tuple[str, list[list[str]]]]:
     return out
 
 
-ORDER_NUMBER_CELL_RE = re.compile(r"^\s*\d{3}-\d{4,6}-\d\s*$")
+# A cell that is nothing but a catalogue code. Generic across vendors, with dates
+# excluded — see signals.looks_like_date.
+ORDER_NUMBER_CELL_RE = re.compile(
+    r"^\s*(?=[A-Z0-9]*\d)[A-Z0-9]{2,}[-./][A-Z0-9]{2,}[-./][A-Z0-9]{1,}\s*$", re.I
+)
 
 # A spec table describes a handful of variants. A table listing dozens of "entities" is an
 # accessory or consumables catalogue, not a specification.
@@ -134,7 +183,10 @@ def _is_order_list(grid: list[list[str]]) -> bool:
         cells = [r[col] for r in grid[1:] if r[col].strip()]
         if not cells:
             continue
-        hits = sum(1 for c in cells if ORDER_NUMBER_CELL_RE.match(c))
+        hits = sum(
+            1 for c in cells
+            if ORDER_NUMBER_CELL_RE.match(c) and not looks_like_date(c)
+        )
         if hits >= max(2, len(cells) * 0.5):
             return True
     return False

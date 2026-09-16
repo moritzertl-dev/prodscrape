@@ -17,8 +17,28 @@ from urllib.parse import urlparse
 
 from selectolax.parser import HTMLParser
 
-SPEC_HEADINGS = ("technical data", "specifications", "technische daten", "tech specs")
-ORDER_HEADINGS = ("order information", "ordering information", "bestellinformationen")
+SPEC_HEADINGS = (
+    # en
+    "technical data", "technical specifications", "specifications", "tech specs",
+    "specification",
+    # de
+    "technische daten", "spezifikationen",
+    # fr / es / it / pt / nl / pl
+    "données techniques", "caractéristiques techniques", "spécifications",
+    "datos técnicos", "especificaciones", "características técnicas",
+    "dati tecnici", "specifiche tecniche",
+    "dados técnicos", "especificações",
+    "technische gegevens", "specificaties",
+    "dane techniczne", "specyfikacja",
+    # zh / ja
+    "技术参数", "技术数据", "規格", "仕様",
+)
+ORDER_HEADINGS = (
+    "order information", "ordering information", "ordering", "order data",
+    "bestellinformationen", "bestelldaten",
+    "informations de commande", "información de pedido", "informazioni per l'ordine",
+    "bestelinformatie",
+)
 # Matched against a whole heading, not as a substring: product pages legitimately carry
 # widgets like "Publication Finder", and substring matching turned that into a 0.5 penalty
 # on a real instrument page.
@@ -32,7 +52,36 @@ NEGATIVE_HEADINGS = (
     "newsletter",
 )
 
-ORDER_NUMBER_RE = re.compile(r"\b\d{3}-\d{4,6}-\d\b")
+# A catalogue/order code, generically: an alphanumeric token containing at least one
+# digit and split by at least two separators.
+#
+# This used to be `\d{3}-\d{4,6}-\d`, which is Analytik Jena's format and nobody else's —
+# every other vendor silently scored 0.2 lower on a signal they could never earn. A
+# vendor with a genuinely different shape can still override it in its recipe.
+ORDER_NUMBER_RE = re.compile(
+    r"\b(?=[A-Z0-9]*\d)[A-Z0-9]{2,}[-./][A-Z0-9]{2,}[-./][A-Z0-9]{1,}\b", re.I
+)
+
+# Dates and timestamps have exactly the shape of an order code. Left unfiltered they
+# handed a press release the same "has order numbers" signal as a product page.
+_DATE_LIKE_RE = re.compile(
+    r"^(?:\d{4}[-./]\d{1,2}[-./]\d{1,2}"      # 2024-03-31
+    r"|\d{1,2}[-./]\d{1,2}[-./]\d{2,4})",      # 31.03.2024
+    re.I,
+)
+
+
+def looks_like_date(token: str) -> bool:
+    return bool(_DATE_LIKE_RE.match(token.strip()))
+
+
+def find_order_numbers(text: str, limit: int = 20) -> list[str]:
+    """Catalogue codes in a blob of text, with dates and timestamps excluded."""
+    return sorted(
+        {m for m in ORDER_NUMBER_RE.findall(text) if not looks_like_date(m)}
+    )[:limit]
+
+
 DATASHEET_RE = re.compile(r"\.pdf(\?|$)", re.I)
 
 
@@ -114,7 +163,7 @@ def page_signals(
         has_jsonld_product=_jsonld_has_product(tree),
         has_spec_heading=any(k in h for h in lowered for k in spec_terms),
         has_order_heading=any(k in h for h in lowered for k in order_terms),
-        order_numbers=sorted(set(ORDER_NUMBER_RE.findall(body_text)))[:20],
+        order_numbers=find_order_numbers(body_text),
         pdf_links=sum(
             1
             for a in tree.css("a[href]")

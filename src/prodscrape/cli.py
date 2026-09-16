@@ -40,7 +40,13 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     for err in profile.errors:
         print(f"  ! {err}")
     if not urls:
-        print("\nNo URLs discovered — site may need the BFS crawl fallback (not built yet).")
+        if profile.blocked:
+            print("\nThe site blocks automated access — 403 even with a browser "
+                  "User-Agent.\nThis is not a missing sitemap; report the vendor as "
+                  "unscrapeable by this tool.")
+        else:
+            print("\nNo URLs discovered: no usable sitemap, and the crawl found no "
+                  "followable links.")
         return 1
 
     print("\n--- path prefix tree (this is what the agent sees) ---")

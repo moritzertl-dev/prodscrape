@@ -154,11 +154,16 @@ tier-B queue was 12 pages / ~2,200 tokens.
 
 ## Extraction results
 
-| vendor | devices | held for review | merged groups | structured values |
+| vendor | recipe | devices | held for review | merged groups |
 |---|---|---|---|---|
-| analytik-jena.com | 143 | 3 | 1 | 49% |
-| binder-world.com | 110 | 0 | 59 | 78% |
-| qinstruments.com | 13 | 0 | 0 | 9% |
+| analytik-jena.com | saved | 143 | 3 | 1 |
+| binder-world.com | saved | 110 | 0 | 59 |
+| qinstruments.com | saved | 13 | 0 | 0 |
+| retsch.com | **none — inferred** | 55 | 0 | 0 |
+
+`retsch.com` is the generalisation check: a vendor the tool had never seen, with no recipe
+written for it, yielding 55 devices with real specifications. Inference picked the `/de/`
+locale, so the output is in German — pin `locale` in a recipe to get English.
 
 **266 devices, no duplicate names.**
 
