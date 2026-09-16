@@ -20,6 +20,14 @@ context window.
 
 ## Procedure
 
+### 0. State the expected cost — `estimate_cost(domain)`
+
+After the first scan, before you start judging anything, report what the run is expected
+to cost and say so in one line. At the end, call `cost_report(domain)` and report what it
+actually cost. Both figures count **only what the pipeline hands to the model** — your own
+conversation context is billed too and is not visible to these tools, so present them as a
+floor, never as the whole bill.
+
 ### 1. Look at the site — `site_overview(domain)`
 
 A handful of requests, no product pages. Read the returned prefix tree and check:
@@ -119,3 +127,8 @@ Report it that way.
 Give counts, the review-queue size, and anything you could not resolve. Do not present a
 number as verified when it rests on a rule you guessed at — say which recipe fields you
 inferred and which you confirmed against the tree.
+
+Close with the cost: the estimate you gave at the start and the measured figure from
+`cost_report`, stated as tokens and dollars, with the caveat that it excludes your own
+context. If the two diverge a lot, say why — usually the escalation rate for this vendor
+differed from the 30% planning assumption.

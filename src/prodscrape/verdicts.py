@@ -15,6 +15,7 @@ from pathlib import Path
 
 CLASSIFICATION = "classification"
 REVIEW = "review"
+USAGE = "usage"
 
 VALID_LABELS = {
     "instrument", "accessory", "consumable", "software", "service",
@@ -39,6 +40,7 @@ class VerdictStore:
             data = {CLASSIFICATION: {}, REVIEW: {}}
         data.setdefault(CLASSIFICATION, {})
         data.setdefault(REVIEW, {})
+        data.setdefault(USAGE, {"input_tokens": 0, "output_tokens": 0, "calls": 0})
         return cls(path=path, data=data)
 
     def save(self) -> Path:
@@ -77,6 +79,21 @@ class VerdictStore:
 
     def review_for(self, product_id: str) -> dict | None:
         return self.data[REVIEW].get(product_id)
+
+    def add_usage(self, input_tokens: int, output_tokens: int = 0) -> None:
+        """Record tokens actually handed to the model.
+
+        This counts what the pipeline passed across the boundary. It does not and cannot
+        include the agent's own conversation context, which is billed as well.
+        """
+        usage = self.data[USAGE]
+        usage["input_tokens"] += int(input_tokens)
+        usage["output_tokens"] += int(output_tokens)
+        usage["calls"] += 1
+
+    @property
+    def usage(self) -> dict:
+        return dict(self.data[USAGE])
 
     @property
     def counts(self) -> dict:

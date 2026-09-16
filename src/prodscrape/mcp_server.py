@@ -22,6 +22,9 @@ from pathlib import Path
 # mcp 2.x renamed FastMCP to MCPServer; the decorator API is unchanged.
 from mcp.server.mcpserver import MCPServer
 
+from .costs import (
+    DEFAULT_MODEL, TOKENS_PER_VERDICT, compare_naive, estimate_scrape, price,
+)
 from .digest import digest_size_estimate, page_digest
 from .discover import discover_site
 from .fetch import Cache, Fetcher
@@ -160,11 +163,19 @@ def pending_classifications(domain: str, limit: int = 20) -> dict:
         tokens += digest_size_estimate(digest)
         digests.append(digest)
 
+    # Tally what actually crossed the boundary, so the end-of-run figure is measured
+    # rather than re-estimated.
+    if digests:
+        store.add_usage(tokens, output_tokens=len(digests) * TOKENS_PER_VERDICT)
+        store.save()
+
+    est = price(DEFAULT_MODEL, tokens, len(digests) * TOKENS_PER_VERDICT)
     return {
         "domain": domain,
         "pending_total": len(rows),
         "returned": len(digests),
         "approx_tokens": tokens,
+        "cost_of_this_batch": est.as_dict(),
         "digests": digests,
     }
 
@@ -341,6 +352,61 @@ def export_table(domain: str, category: str | None = None) -> dict:
             result["category_csv"] = None
             result["note"] = f"no devices in category {category!r}"
     return result
+
+
+@mcp.tool()
+def estimate_cost(domain: str, model: str = DEFAULT_MODEL) -> dict:
+    """What this vendor is expected to cost in model calls, before you start.
+
+    Call this at the beginning of a run and report the figure. It prices only the
+    escalated minority — the deterministic tiers are free — and excludes the agent's own
+    conversation context, which is billed separately and is not visible from here.
+    """
+    out = _run_dir(domain)
+    candidates = len(_read_jsonl(out / "candidates.jsonl"))
+    extracted = _read_jsonl(out / "extracted.jsonl")
+    review_rows = sum(1 for r in extracted if not r["specs"])
+
+    if not candidates:
+        return {
+            "domain": domain,
+            "note": "no scan yet — run site_overview then scan_site first",
+        }
+
+    est = estimate_scrape(candidates, model=model, review_rows=review_rows)
+    naive = compare_naive(candidates, model=model)
+    return {
+        "domain": domain,
+        "candidates": candidates,
+        "estimate": est.as_dict(),
+        "if_whole_pages_were_sent": naive.as_dict(),
+        "saving_factor": round(naive.total_cost / max(est.total_cost, 1e-9)),
+        "summary": est.summary(),
+    }
+
+
+@mcp.tool()
+def cost_report(domain: str, model: str = DEFAULT_MODEL) -> dict:
+    """What this vendor actually cost — tokens measured as they were handed over.
+
+    Call this at the end of a run and report the figure alongside the estimate. This is a
+    floor, not the full bill: it counts every digest and queue the pipeline passed to you,
+    but not your own conversation context.
+    """
+    store = VerdictStore.load(_run_dir(domain))
+    usage = store.usage
+    actual = price(model, usage["input_tokens"], usage["output_tokens"])
+    return {
+        "domain": domain,
+        "model_calls_made": usage["calls"],
+        "verdicts_recorded": store.counts,
+        "actual": actual.as_dict(),
+        "summary": (
+            f"{actual.total_tokens:,} tokens handed to the model across "
+            f"{usage['calls']} batches = ${actual.total_cost:.4f} at {model} rates. "
+            "Excludes your own conversation context, which is billed separately."
+        ),
+    }
 
 
 @mcp.tool()
