@@ -63,9 +63,12 @@ INTERFACE_PATTERNS = {
     "SiLA": r"\bSiLA[-\s]?2?\b",
     "OPC-UA": r"\bOPC[-\s]?UA\b",
     "Modbus": r"\bModbus\b",
-    "Serial": r"\bserial\s+(?:port|interface)\b",
-    "Analog I/O": r"\banalog\s+(?:in|out|i/o)\b",
-    "Digital I/O": r"\bdigital\s+(?:in|out|i/o)\b",
+    "Serial": r"\bserial\s+(?:port|interface|connection)\b",
+    # "in" and "out" alone match ordinary prose — "Digital in PDF format" on a
+    # qualification-documents line was being read as a digital I/O interface on 87 of one
+    # vendor's 90 pages. Require the full word, or an explicit I/O form.
+    "Analog I/O": r"\banalog(?:ue)?\s+(?:inputs?|outputs?|i/o|interface)\b",
+    "Digital I/O": r"\bdigital\s+(?:inputs?|outputs?|i/o|interface)\b",
 }
 
 _PDF_RE = re.compile(r"\.pdf(\?|$)", re.I)
@@ -162,7 +165,36 @@ def tables_with_headings(html: str) -> list[tuple[str, list[list[str]]]]:
             if grid:
                 width = max(len(r) for r in grid)
                 out.append((current, [r + [""] * (width - len(r)) for r in grid]))
+        elif node.tag == "dl":
+            grid = _definition_list_grid(node)
+            if grid:
+                out.append((current, grid))
     return out
+
+
+def _definition_list_grid(node) -> list[list[str]]:
+    """A ``<dl>`` rendered as a two-column grid.
+
+    Plenty of vendors mark specifications up as definition lists rather than tables, and
+    reading only ``<table>`` meant those pages produced no specs at all. The synthetic
+    blank header row makes orientation detection read it as attribute-major, which is
+    what a definition list always is.
+    """
+    pairs: list[list[str]] = []
+    label: str | None = None
+    for child in node.iter(include_text=False):
+        if child.tag == "dt":
+            label = _cell_text_of(child)
+        elif child.tag == "dd" and label is not None:
+            value = _cell_text_of(child)
+            if label and value:
+                pairs.append([label, value])
+            label = None
+    return [["", ""], *pairs] if len(pairs) >= 2 else []
+
+
+def _cell_text_of(node) -> str:
+    return " ".join(node.text(separator=" ", strip=True).split())
 
 
 # A cell that is nothing but a catalogue code. Generic across vendors, with dates
@@ -240,9 +272,61 @@ def find_spec_table(
     return grid, f"{label}:{heading or 'no heading'}"
 
 
+# Chrome that surrounds the content on every page. Left in, a "USB-C accessories" entry
+# in a global nav gave every product on the site a USB interface it does not have.
+CHROME_TAGS = ("nav", "header", "footer", "aside", "script", "style", "noscript")
+CHROME_CLASS_RE = re.compile(
+    r"\b(nav|menu|header|footer|breadcrumb|cookie|consent|banner|sidebar|"
+    r"megamenu|subnav|topbar|skip-link)\b",
+    re.I,
+)
+
+
+def main_content_text(html: str, *, min_retained: float = 0.3) -> str:
+    """Page text with navigation, headers, footers and cookie banners removed.
+
+    Interfaces are read from the whole page rather than only the spec table, so the
+    surrounding chrome has to go first — otherwise a global nav gives every product on
+    the site the same interfaces.
+
+    Stripping by class name is unavoidably a guess: a vendor that wraps its entire page
+    in a ``<div class="...header...">`` loses everything, which is exactly what happened
+    on one site — 11,907 characters of page became 33. So the result is checked, and if
+    less than ``min_retained`` of the text survives the strip is treated as having gone
+    wrong and the full body is used. Over-reporting an interface is a far smaller error
+    than reporting none.
+    """
+    full_tree = HTMLParser(html)
+    full = (
+        " ".join(full_tree.body.text(separator=" ", strip=True).split())
+        if full_tree.body else ""
+    )
+    if not full:
+        return ""
+
+    tree = HTMLParser(html)
+    for tag in CHROME_TAGS:
+        for node in tree.css(tag):
+            node.decompose()
+
+    # Chrome is a minority of a page by definition. A wrapper whose class merely happens
+    # to contain "header" can hold the entire article, so anything carrying a large share
+    # of the text is left alone whatever it is called.
+    budget = len(full) * 0.4
+    for node in tree.css("[class]"):
+        if not CHROME_CLASS_RE.search(node.attributes.get("class") or ""):
+            continue
+        if len(node.text(separator=" ", strip=True)) > budget:
+            continue
+        node.decompose()
+
+    main = tree.css_first("main") or tree.css_first("article") or tree.body
+    stripped = " ".join(main.text(separator=" ", strip=True).split()) if main else ""
+    return full if len(stripped) < len(full) * min_retained else stripped
+
+
 def detect_interfaces(html: str) -> list[str]:
-    text = HTMLParser(html).body
-    body = text.text(separator=" ", strip=True) if text else ""
+    body = main_content_text(html)
     return sorted(
         name for name, pattern in INTERFACE_PATTERNS.items()
         if re.search(pattern, body, re.I)

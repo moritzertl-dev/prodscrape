@@ -33,7 +33,7 @@ including the config block and troubleshooting: [`SETUP.md`](SETUP.md).
 From a checkout:
 
 ```bash
-uv sync && uv run pytest -q     # 121 tests, fully offline
+uv sync && uv run pytest -q     # 127 tests, fully offline
 uv run prodscrape tree <domain>
 ```
 
@@ -118,6 +118,7 @@ never seen.
 ## Documentation
 
 - [`SETUP.md`](SETUP.md) — installing it in Claude Desktop or Claude Code, and sharing it
+- [`NOTES.md`](NOTES.md) — field notes: real vendor quirks and how each is handled
 - [`PIPELINE.md`](PIPELINE.md) — the design spec: stages, schema, reproducibility contract
 - [`src/prodscrape/SKILL.md`](src/prodscrape/SKILL.md) — the procedure the agent follows.
   It ships inside the package and is served by the `get_procedure` tool, so it always

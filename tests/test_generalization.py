@@ -159,3 +159,84 @@ def test_leaf_depth_distribution_reports_the_spread():
 
     urls = ["https://x.test/a/", "https://x.test/a/b", "https://x.test/c/d/e"]
     assert leaf_depth_distribution(urls) == {2: 1, 3: 1}
+
+
+# --- markup the first vendors did not use ------------------------------------------
+
+def test_definition_lists_are_read_as_spec_tables():
+    """Plenty of vendors mark specs up as <dl> rather than <table>; reading only tables
+    produced no specs at all for those pages."""
+    from prodscrape.extract import extract_page, find_spec_table
+
+    html = """<h1>Widget 900</h1><h2>Technical Data</h2>
+    <dl>
+      <dt>Temperature range</dt><dd>5 to 70 °C</dd>
+      <dt>Capacity</dt><dd>247 L</dd>
+      <dt>Interfaces</dt><dd>Ethernet, RS-232</dd>
+    </dl>"""
+    grid, provenance = find_spec_table(html)
+    assert grid is not None
+    assert provenance.startswith("heading:")
+
+    records = extract_page("https://x.test/p/widget-900", html, manufacturer="M")
+    assert len(records) == 1
+    assert records[0].specs["temperature_range"].raw == "5 to 70 °C"
+    assert records[0].specs["capacity"].raw == "247 L"
+
+
+def test_single_pair_definition_list_is_ignored():
+    """One dt/dd pair is a label, not a specification table."""
+    from prodscrape.extract import find_spec_table
+
+    html = "<h2>Technical Data</h2><dl><dt>Only</dt><dd>one</dd></dl>"
+    assert find_spec_table(html)[0] is None
+
+
+# --- interface precision ------------------------------------------------------------
+
+def test_prose_is_not_mistaken_for_an_interface():
+    """'Digital in PDF format' was read as a digital I/O interface on 87 of one vendor's
+    90 pages — polluting the column the catalogue exists to produce."""
+    from prodscrape.extract import detect_interfaces
+
+    assert detect_interfaces("<body>Qualification documents. Digital in PDF format.</body>") == []
+    assert "Digital I/O" in detect_interfaces("<body>4 digital inputs, 2 digital outputs</body>")
+
+
+def test_navigation_does_not_leak_interfaces():
+    from prodscrape.extract import detect_interfaces
+
+    html = ("<body><nav>USB accessories | Ethernet cables</nav>"
+            "<main><p>Bench mixer with no connectivity.</p></main></body>")
+    assert detect_interfaces(html) == []
+
+
+def test_content_stripping_never_empties_the_page():
+    """A wrapper whose class merely contains 'header' can hold the whole article. One
+    vendor's 11,907-character page became 33 before this guard."""
+    from prodscrape.extract import main_content_text
+
+    html = ('<body><div class="page-header-wrapper"><main><p>'
+            + "Real specification content. " * 40 + "</p></main></div></body>")
+    text = main_content_text(html)
+    assert len(text) > 500
+    assert "Real specification content" in text
+
+
+# --- duplicate SKU URLs -------------------------------------------------------------
+
+def test_query_string_variants_collapse_to_one_page():
+    """A catalogue that publishes one page per SKU would otherwise be fetched dozens of
+    times and yield a device row per part number."""
+    from prodscrape.inventory import collapse_query_variants
+
+    urls = [
+        "https://x.test/p/pipette",
+        "https://x.test/p/pipette?part-number=1",
+        "https://x.test/p/pipette?part-number=2",
+        "https://x.test/p/syringe?part-number=9",
+    ]
+    canonical, collapsed = collapse_query_variants(urls)
+    assert sorted(canonical) == ["https://x.test/p/pipette", "https://x.test/p/syringe?part-number=9"]
+    # Nothing is discarded silently — the part numbers stay available.
+    assert len(collapsed["https://x.test/p/pipette"]) == 2

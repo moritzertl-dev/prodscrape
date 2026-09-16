@@ -13,7 +13,9 @@ from pathlib import Path
 
 from .discover import discover_site
 from .fetch import Cache, Fetcher
-from .inventory import prefix_tree, render_tree, select_candidates, url_depth
+from .inventory import (
+    collapse_query_variants, prefix_tree, render_tree, select_candidates, url_depth,
+)
 from .recipes import Recipe, infer_rules, load_recipe
 from .signals import classify_by_signals, page_signals
 from .verdicts import VerdictStore
@@ -108,9 +110,20 @@ def run_scan(
             depths=recipe.family_depths or None,
             leaf_only=recipe.leaf_only,
         )
+        # One page published once per SKU would otherwise be fetched dozens of times
+        # and produce a device row per part number.
+        candidates, query_variants = collapse_query_variants(candidates)
         _write_jsonl(
             out / "candidates.jsonl",
-            [{"url": u, "depth": url_depth(u), "discovered_via": "sitemap"} for u in candidates],
+            [
+                {
+                    "url": u,
+                    "depth": url_depth(u),
+                    "discovered_via": "sitemap",
+                    "query_variants": query_variants.get(u, []),
+                }
+                for u in candidates
+            ],
         )
 
         capped = None
@@ -177,6 +190,7 @@ def run_scan(
         "sitemaps_found": profile.sitemaps_found,
         "total_urls": len(urls),
         "candidates": len(candidates),
+        "query_variants_collapsed": sum(len(v) for v in query_variants.values()),
         "classified": len(verdicts),
         "capped_at": capped,
         "agent_verdicts_applied": sum(

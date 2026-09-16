@@ -78,6 +78,37 @@ def _normalised_path(url: str) -> str:
     return path if path.endswith("/") else path + "/"
 
 
+def collapse_query_variants(urls: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+    """Collapse URLs that differ only by query string onto one canonical page.
+
+    Catalogues commonly expose the same page once per SKU — ``/pipette?part-number=1``,
+    ``?part-number=2`` and so on. Treated as separate candidates they are fetched dozens
+    of times, and each copy becomes its own device row.
+
+    Returns ``(canonical_urls, collapsed)``, where ``collapsed`` maps each canonical URL
+    to the variants folded into it — nothing is discarded silently, and the part numbers
+    remain available.
+    """
+    groups: dict[str, list[str]] = {}
+    for url in urls:
+        parsed = urlparse(url)
+        key = parsed._replace(query="", fragment="").geturl()
+        groups.setdefault(key, []).append(url)
+
+    canonical: list[str] = []
+    collapsed: dict[str, list[str]] = {}
+    for key, members in groups.items():
+        # Prefer the bare URL if the site publishes one; otherwise keep the first variant
+        # so the page is still reachable.
+        bare = next((m for m in members if not urlparse(m).query), None)
+        chosen = bare or sorted(members)[0]
+        canonical.append(chosen)
+        others = [m for m in members if m != chosen]
+        if others:
+            collapsed[chosen] = sorted(others)
+    return canonical, collapsed
+
+
 def leaf_urls(urls: list[str]) -> set[str]:
     """URLs that no other URL in the set extends.
 

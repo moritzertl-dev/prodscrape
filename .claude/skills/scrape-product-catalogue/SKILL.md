@@ -127,6 +127,12 @@ Every spec keeps its `raw` string. A low structured-parse rate means values are 
 prose, **not** that extraction failed — QInstruments parses at 9% and the data is complete.
 Report it that way.
 
+## When a vendor misbehaves
+
+Check `NOTES.md` in the repo before concluding the tool is broken — it lists the
+site quirks already handled and the ones still open. If you hit a new one, say so
+explicitly in your summary so it can be added rather than re-discovered.
+
 ## What to tell the user
 
 Give counts, the review-queue size, and anything you could not resolve. Do not present a
