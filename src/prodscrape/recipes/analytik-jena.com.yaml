@@ -24,7 +24,8 @@ product_urls:
     - "/industries-solutions/*"
     - "/stories/*"
     - "/service-support/*"
-  family_depth: 5               # depths 1-4 are taxonomy landing pages
+  family_depth: 5                 # scoring hint only, not a filter
+  leaf_only: true             # select pages with no children, at any depth               # depths 1-4 are taxonomy landing pages
   slug_suffix: "-series"        # strong but not universal: "hydride-systems" lacks it
   expected_candidates: 56
 

@@ -157,7 +157,7 @@ tier-B queue was 12 pages / ~2,200 tokens.
 | vendor | recipe | devices | held for review | merged groups |
 |---|---|---|---|---|
 | analytik-jena.com | saved | 143 | 3 | 1 |
-| binder-world.com | saved | 110 | 0 | 59 |
+| binder-world.com | saved | 115 | 0 | 59 |
 | qinstruments.com | saved | 13 | 0 | 0 |
 | retsch.com | **none — inferred** | 55 | 0 | 0 |
 

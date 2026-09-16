@@ -99,11 +99,14 @@ def run_scan(
         recipe.platform = recipe.platform or profile.platform
         recipe.base_url = recipe.base_url or profile.base_url
 
+        # Leaf-ness selects; depth only scores. A fixed depth skipped 40 real BINDER
+        # product pages that sit above its modal level.
         candidates = select_candidates(
             urls,
             include=recipe.include or None,
             exclude=recipe.exclude or None,
-            depth=recipe.family_depth,
+            depths=recipe.family_depths or None,
+            leaf_only=recipe.leaf_only,
         )
         _write_jsonl(
             out / "candidates.jsonl",

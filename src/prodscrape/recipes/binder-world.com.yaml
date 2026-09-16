@@ -25,7 +25,8 @@ product_urls:
   # NOTE: depth 6 here is an individual MODEL (kb-pro-260-with-ich-light-module),
   # not a family. analytik-jena's depth 5 is a family (plasmaquant-ms-series). The two
   # vendors publish at different granularities — see open_questions.
-  family_depth: 6
+  family_depth: 6                 # scoring hint only, not a filter
+  leaf_only: true             # select pages with no children, at any depth
   slug_suffix: null
   expected_candidates: 99
 

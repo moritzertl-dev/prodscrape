@@ -73,29 +73,80 @@ def depth_histogram(urls: list[str], prefix: str = "") -> dict[int, list[str]]:
     return dict(sorted(out.items()))
 
 
+def _normalised_path(url: str) -> str:
+    path = urlparse(url).path
+    return path if path.endswith("/") else path + "/"
+
+
+def leaf_urls(urls: list[str]) -> set[str]:
+    """URLs that no other URL in the set extends.
+
+    A category page has children in the sitemap; a product page does not. This is the
+    structural difference between the two, and unlike a fixed depth it holds however deep
+    a vendor happens to nest a given branch.
+
+    Hamilton was the case that forced this: its catalogue puts products at several depths,
+    so a single ``family_depth`` silently skipped every product that did not happen to sit
+    at the chosen level.
+    """
+    paths = sorted({_normalised_path(u) for u in urls})
+    leaves: set[str] = set()
+    for i, path in enumerate(paths):
+        nxt = paths[i + 1] if i + 1 < len(paths) else None
+        if nxt is None or not nxt.startswith(path):
+            leaves.add(path)
+    return {u for u in urls if _normalised_path(u) in leaves}
+
+
+def leaf_depth_distribution(urls: list[str]) -> dict[int, int]:
+    """How leaves are spread across depths — the evidence for or against a depth rule."""
+    leaves = leaf_urls(urls)
+    counts: Counter[int] = Counter(url_depth(u) for u in leaves)
+    return dict(sorted(counts.items()))
+
+
 def select_candidates(
     urls: list[str],
     *,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     depth: int | None = None,
+    depths: list[int] | None = None,
+    leaf_only: bool = False,
     slug_suffix: str | None = None,
 ) -> list[str]:
     """Apply recipe rules to shortlist candidate product URLs.
+
+    ``leaf_only`` selects pages with no children, which is depth-agnostic and the
+    preferred rule. ``depths`` accepts several levels; ``depth`` remains for recipes
+    written against the older single-level field.
 
     All filters are deterministic and free — this is tier 1 of the token economy, and on a
     well-structured site it does nearly all the work before any model call.
     """
     include = include or ["**"]
     exclude = exclude or []
+
+    allowed_depths: set[int] | None = None
+    if depths:
+        allowed_depths = set(depths)
+    elif depth is not None:
+        allowed_depths = {depth}
+
+    scoped = [
+        u for u in urls
+        if any(fnmatch.fnmatch(urlparse(u).path, p) for p in include)
+        and not any(fnmatch.fnmatch(urlparse(u).path, p) for p in exclude)
+    ]
+    # Leaf-ness is judged against the whole site, not the filtered subset: a product page
+    # excluded from `include` can still prove that its parent is a category page.
+    leaves = leaf_urls(urls) if leaf_only else None
+
     out = []
-    for url in urls:
-        path = urlparse(url).path
-        if not any(fnmatch.fnmatch(path, pat) for pat in include):
+    for url in scoped:
+        if allowed_depths is not None and url_depth(url) not in allowed_depths:
             continue
-        if any(fnmatch.fnmatch(path, pat) for pat in exclude):
-            continue
-        if depth is not None and url_depth(url) != depth:
+        if leaves is not None and url not in leaves:
             continue
         if slug_suffix is not None:
             segs = path_segments(url)

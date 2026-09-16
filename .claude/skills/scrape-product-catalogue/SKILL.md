@@ -51,8 +51,13 @@ tree before saving**, because it is wrong in predictable ways:
   and `/laboratory` — and the guess found only the first.
 - **No product token.** If the notes say "verify this", the site has no `/products/` path
   and the guess is a largest-branch fallback. Read the tree yourself.
-- **`family_depth`** is the path depth holding product pages. Check a sample URL at that
-  depth really is a product and not a category page.
+- **Leave `leaf_only` on.** Candidates are pages with no children, at any depth — that
+  is what a product page is, structurally. Do not replace it with a `family_depth`:
+  catalogues nest products at several levels, and a single depth fails both ways, by
+  dropping products above and below it and by admitting category pages that happen to
+  sit at it. On BINDER a fixed depth was silently skipping 40 real product pages.
+- **`family_depth`** is only a scoring hint now. Set `family_depths` (a list) if a
+  vendor genuinely needs an explicit whitelist of levels.
 
 Add `spec_headings` if the vendor words it unusually. These *extend* the built-in defaults
 (`technical data`, `specifications`, `technische daten`), so a partial recipe is always

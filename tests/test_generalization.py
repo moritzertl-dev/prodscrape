@@ -15,7 +15,7 @@ from prodscrape.signals import ORDER_NUMBER_RE, find_order_numbers, looks_like_d
 # --- order codes -------------------------------------------------------------------
 
 def test_order_codes_are_vendor_neutral():
-    """Was `\d{3}-\d{4,6}-\d` — Analytik Jena's format and nobody else's."""
+    """Was a fixed three-part numeric pattern - Analytik Jena's format, nobody else's."""
     for code in ("818-08010-2", "OL5004-26-027", "20.745.0001", "AB1/234/X9"):
         assert ORDER_NUMBER_RE.search(code), code
 
@@ -94,3 +94,68 @@ def test_uncommon_locales_are_recognised():
     from prodscrape.recipes import LOCALE_SEGMENTS
 
     assert {"bg", "cz", "hu", "tr", "int-en"} <= LOCALE_SEGMENTS
+
+
+# --- mixed-depth catalogues --------------------------------------------------------
+
+def test_leaf_detection_finds_products_at_several_depths():
+    """Hamilton's catalogue nests products at different levels. A single family_depth
+    silently skipped every product that sat elsewhere."""
+    from prodscrape.inventory import leaf_urls, select_candidates, url_depth
+
+    urls = [
+        "https://x.test/products/",                         # root, has children
+        "https://x.test/products/pipettes/",                # category, has children
+        "https://x.test/products/pipettes/microlab-600",    # product, depth 3
+        "https://x.test/products/pipettes/microlab-prep",   # product, depth 3
+        "https://x.test/products/syringes/",                # category
+        "https://x.test/products/syringes/gastight/",       # sub-category
+        "https://x.test/products/syringes/gastight/1700",   # product, depth 4
+        "https://x.test/products/valves",                   # product, depth 2
+    ]
+    leaves = leaf_urls(urls)
+    assert "https://x.test/products/valves" in leaves           # shallow product
+    assert "https://x.test/products/syringes/gastight/1700" in leaves   # deep product
+    assert "https://x.test/products/pipettes/" not in leaves    # category excluded
+
+    picked = select_candidates(urls, include=["/products/*"], leaf_only=True)
+    assert len(picked) == 4
+    assert {url_depth(p) for p in picked} == {2, 3, 4}   # products at three depths
+
+    # The old behaviour, for contrast. A single depth fails in *both* directions: it
+    # drops the products above and below the chosen level, and it admits a category page
+    # that happens to sit at it.
+    single = select_candidates(urls, include=["/products/*"], depth=3)
+    assert "https://x.test/products/valves" not in single                  # missed
+    assert "https://x.test/products/syringes/gastight/1700" not in single  # missed
+    assert "https://x.test/products/syringes/gastight/" in single          # wrongly kept
+
+
+def test_several_explicit_depths_are_accepted():
+    from prodscrape.inventory import select_candidates
+
+    urls = [f"https://x.test/p/a/model-{i}" for i in range(3)] + \
+           [f"https://x.test/p/a/b/model-{i}" for i in range(4)]
+    assert len(select_candidates(urls, include=["/p/*"], depths=[3])) == 3
+    assert len(select_candidates(urls, include=["/p/*"], depths=[3, 4])) == 7
+
+
+def test_leafness_is_judged_against_the_whole_site():
+    """A child excluded by `include` still proves its parent is a category page."""
+    from prodscrape.inventory import select_candidates
+
+    urls = [
+        "https://x.test/products/mill",
+        "https://x.test/products/mill/accessories",   # excluded below, but still a child
+    ]
+    picked = select_candidates(
+        urls, include=["/products/*"], exclude=["*/accessories"], leaf_only=True
+    )
+    assert picked == []
+
+
+def test_leaf_depth_distribution_reports_the_spread():
+    from prodscrape.inventory import leaf_depth_distribution
+
+    urls = ["https://x.test/a/", "https://x.test/a/b", "https://x.test/c/d/e"]
+    assert leaf_depth_distribution(urls) == {2: 1, 3: 1}

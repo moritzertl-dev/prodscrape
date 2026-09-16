@@ -90,7 +90,9 @@ def get_recipe(domain: str) -> dict:
 def put_recipe(
     domain: str,
     include: list[str],
-    family_depth: int,
+    family_depth: int | None = None,
+    family_depths: list[int] | None = None,
+    leaf_only: bool = True,
     exclude: list[str] | None = None,
     locale: str | None = None,
     spec_headings: list[str] | None = None,
@@ -104,12 +106,20 @@ def put_recipe(
     This is what makes re-runs free: with a recipe on disk the whole scan is
     deterministic. `spec_headings`/`order_headings` extend the built-in defaults, so a
     partial recipe can never classify worse than none.
+
+    Candidate selection defaults to `leaf_only=True` — pages with no children, at any
+    depth. Prefer it: catalogues nest products at several levels, and a single
+    `family_depth` silently skips every product that sits elsewhere. `family_depth` is
+    kept only as a scoring hint; set `family_depths` if a vendor really needs an explicit
+    whitelist of levels.
     """
     recipe = Recipe(
         domain=domain,
         include=include,
         exclude=exclude or [],
         family_depth=family_depth,
+        family_depths=family_depths or [],
+        leaf_only=leaf_only,
         locale=locale,
         spec_headings=spec_headings or [],
         order_headings=order_headings or [],

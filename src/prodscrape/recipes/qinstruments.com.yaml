@@ -28,7 +28,8 @@ product_urls:
     - "/knowledge/*"
     - "/service/*"
     - "/technologies/*"
-  family_depth: 2
+  family_depth: 2                 # scoring hint only, not a filter
+  leaf_only: true             # select pages with no children, at any depth
   slug_suffix: null
   expected_candidates: 21
 

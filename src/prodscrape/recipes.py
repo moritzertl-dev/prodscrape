@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from .inventory import depth_histogram, path_segments
+from .inventory import depth_histogram, leaf_depth_distribution, path_segments
 from .paths import recipe_search_path, user_recipe_dir
 
 # Path segments that commonly root a product catalogue, across vendors and languages.
@@ -55,7 +55,11 @@ class Recipe:
     sitemap_urls: list[str] = field(default_factory=list)
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
+    # Depth is a *scoring hint*, never a filter: a catalogue puts products at several
+    # levels, and a single depth silently skipped every product elsewhere.
     family_depth: int | None = None
+    family_depths: list[int] = field(default_factory=list)
+    leaf_only: bool = True
     slug_suffix: str | None = None
     spec_headings: list[str] = field(default_factory=list)
     order_headings: list[str] = field(default_factory=list)
@@ -103,6 +107,8 @@ def load_recipe(domain: str) -> Recipe | None:
         include=urls.get("include", []),
         exclude=urls.get("exclude", []),
         family_depth=urls.get("family_depth"),
+        family_depths=urls.get("family_depths", []) or [],
+        leaf_only=urls.get("leaf_only", True),
         slug_suffix=urls.get("slug_suffix"),
         spec_headings=cls.get("spec_headings", []),
         order_headings=cls.get("order_headings", []),
@@ -128,6 +134,8 @@ def save_recipe(recipe: Recipe, path: Path | None = None) -> Path:
             "include": recipe.include,
             "exclude": recipe.exclude,
             "family_depth": recipe.family_depth,
+            "family_depths": recipe.family_depths,
+            "leaf_only": recipe.leaf_only,
             "slug_suffix": recipe.slug_suffix,
         },
         "classification": {
@@ -204,11 +212,19 @@ def infer_rules(urls: list[str], domain: str) -> Recipe:
         deep = {d: len(v) for d, v in hist.items()}
 
     family_depth = max(deep, key=lambda d: deep[d]) if deep else None
-    if family_depth is not None:
+
+    # Report where the *leaves* sit, since leaf-ness is what actually selects candidates.
+    # A spread across several depths is the normal case, not an anomaly — which is why a
+    # single family_depth was the wrong rule.
+    in_scope = [u for u in urls if urlparse(u).path.startswith(root_path + "/")]
+    leaf_dist = leaf_depth_distribution(in_scope)
+    if leaf_dist:
         notes.append(
-            f"family_depth={family_depth} holds {deep[family_depth]} URLs "
-            f"(depth counts: {deep})"
+            f"{sum(leaf_dist.values())} leaf pages across depths {leaf_dist} — "
+            f"selection uses leaf-ness, so all of them are candidates"
         )
+    if family_depth is not None:
+        notes.append(f"modal depth {family_depth} (a scoring hint, not a filter)")
 
     return Recipe(
         domain=domain,
