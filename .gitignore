@@ -1,0 +1,14 @@
+# Run artifacts and fetched pages. Anchored to the repo root on purpose: an unanchored
+# `cache/` also matches tests/golden/cache/, which is the fixture corpus the offline
+# test suite depends on.
+/cache/
+/runs/
+/recipes/
+/dist/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/

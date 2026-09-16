@@ -1,0 +1,105 @@
+"""Stage 1 — URL triage.
+
+The context-economy move (PIPELINE.md §1): never hand the agent a raw URL list. Return a
+path-prefix tree with counts and a few samples per branch, so a 40k-URL site is summarised
+in ~40 lines and the agent can pick product branches for a handful of tokens.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+
+def path_segments(url: str) -> list[str]:
+    return [s for s in urlparse(url).path.split("/") if s]
+
+
+def url_depth(url: str) -> int:
+    return len(path_segments(url))
+
+
+@dataclass
+class Branch:
+    prefix: str
+    count: int
+    depth: int
+    samples: list[str]
+
+
+def prefix_tree(
+    urls: list[str], *, max_depth: int = 3, samples_per_branch: int = 3
+) -> list[Branch]:
+    """Aggregate URLs into a prefix tree summary, sorted by path."""
+    counts: Counter[str] = Counter()
+    samples: defaultdict[str, list[str]] = defaultdict(list)
+    for url in urls:
+        segs = path_segments(url)
+        for d in range(1, min(len(segs), max_depth) + 1):
+            prefix = "/" + "/".join(segs[:d])
+            counts[prefix] += 1
+            if len(samples[prefix]) < samples_per_branch:
+                samples[prefix].append(url)
+    return [
+        Branch(prefix=p, count=counts[p], depth=p.count("/"), samples=samples[p])
+        for p in sorted(counts)
+    ]
+
+
+def render_tree(branches: list[Branch], *, min_count: int = 1) -> str:
+    """Human/agent-readable rendering. This is what the MCP tool returns."""
+    lines = []
+    for b in branches:
+        if b.count < min_count:
+            continue
+        lines.append(f"{'  ' * (b.depth - 1)}{b.prefix}  [{b.count}]")
+    return "\n".join(lines)
+
+
+def depth_histogram(urls: list[str], prefix: str = "") -> dict[int, list[str]]:
+    """Group URLs by path depth under an optional prefix.
+
+    Depth is the cheapest product/taxonomy discriminator there is: on the reference site
+    product families sit at depth 5 while depths 1-4 are category landing pages.
+    """
+    out: defaultdict[int, list[str]] = defaultdict(list)
+    for url in urls:
+        path = urlparse(url).path
+        if prefix and not path.startswith(prefix):
+            continue
+        out[url_depth(url)].append(url)
+    return dict(sorted(out.items()))
+
+
+def select_candidates(
+    urls: list[str],
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    depth: int | None = None,
+    slug_suffix: str | None = None,
+) -> list[str]:
+    """Apply recipe rules to shortlist candidate product URLs.
+
+    All filters are deterministic and free — this is tier 1 of the token economy, and on a
+    well-structured site it does nearly all the work before any model call.
+    """
+    include = include or ["**"]
+    exclude = exclude or []
+    out = []
+    for url in urls:
+        path = urlparse(url).path
+        if not any(fnmatch.fnmatch(path, pat) for pat in include):
+            continue
+        if any(fnmatch.fnmatch(path, pat) for pat in exclude):
+            continue
+        if depth is not None and url_depth(url) != depth:
+            continue
+        if slug_suffix is not None:
+            segs = path_segments(url)
+            if not segs or not segs[-1].endswith(slug_suffix):
+                continue
+        out.append(url)
+    return out

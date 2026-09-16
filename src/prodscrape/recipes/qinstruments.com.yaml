@@ -1,0 +1,47 @@
+# Site recipe for QInstruments (BioShake orbital shakers, thermal plates, automation).
+# Third vendor, added 2026-09-16. First site requiring the BFS crawl fallback.
+version: 1
+domain: qinstruments.com
+base_url: https://www.qinstruments.com
+platform: typo3
+locale: null
+
+discovery:
+  # robots.txt DOES declare a sitemap, but https://www.qinstruments.com/sitemap.xml
+  # returns HTTP 200 with the body "Invalid error handler configuration: t3://page?uid=234".
+  # The vendor's sitemap is broken, so discovery falls back to a bounded BFS crawl.
+  sitemap_declared_in_robots: true
+  sitemap_broken: true
+  sitemap_urls: []
+  requires_crawl: true
+  expected_total_urls: 127
+  # NOTE: the bare domain qinstruments.com has no DNS record; only www resolves.
+
+product_urls:
+  # Two product branches, and neither is called "products" — inference found
+  # /automation but missed /laboratory. No catalogue path token exists on this site.
+  include:
+    - "/automation/*"
+    - "/laboratory/*"
+  exclude:
+    - "/company/*"
+    - "/knowledge/*"
+    - "/service/*"
+    - "/technologies/*"
+  family_depth: 2
+  slug_suffix: null
+  expected_candidates: 21
+
+classification:
+  spec_headings: ["Technical Data", "Specifications", "Technical Specifications"]
+  order_headings: ["Order Information", "Ordering"]
+  threshold: 0.6
+
+extraction:
+  spec_table_orientation: null    # not yet determined
+
+open_questions:
+  - "Model-level granularity again: bioshake-3000, -3000-elm, -3000-t, -3000-t-elm are
+     variants of one BioShake 3000 family. Third vendor in a row publishing below family
+     level — analytik-jena is now the outlier, not the norm."
+  - "/automation/adapter and /laboratory/adapter are accessory pages; confirm rejection."

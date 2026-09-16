@@ -1,0 +1,32 @@
+[project]
+name = "prodscrape"
+version = "0.1.0"
+description = "Reproducible, token-frugal product-catalogue scraper for lab instrument vendors"
+readme = "README.md"
+authors = [
+    { name = "ertlmoritz", email = "moritz.ertl@prodmail.de" }
+]
+requires-python = ">=3.13"
+urls = { Homepage = "https://github.com/moritzertl-dev/prodscrape", Source = "https://github.com/moritzertl-dev/prodscrape" }
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=2.2.0",
+    "pint>=0.26.1",
+    "platformdirs>=4.11.8",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.3",
+    "selectolax>=0.4.11",
+]
+
+[project.scripts]
+prodscrape = "prodscrape.cli:main"
+prodscrape-mcp = "prodscrape.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

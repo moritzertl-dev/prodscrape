@@ -1,0 +1,23 @@
+{
+  "_comment": "Hand-labelled golden set for classification eval (PIPELINE.md §3). 'ambiguous' marks cases where the instrument/accessory boundary needs a human ruling.",
+  "_labels": ["instrument", "accessory", "consumable", "software", "service", "category_page", "other"],
+  "items": [
+    {"url": "https://www.analytik-jena.com/products/chemical-analysis/elemental-analysis/icp-ms/plasmaquant-ms-series/", "label": "instrument", "note": "ICP-MS, 4 variants, full spec table"},
+    {"url": "https://www.analytik-jena.com/products/liquid-handling-automation/laboratory-equipment/automated-liquid-handlers-alh/cybio-felix-series/", "label": "instrument", "note": "automated liquid handler"},
+    {"url": "https://www.analytik-jena.com/products/liquid-handling-automation/laboratory-equipment/automated-liquid-handlers-alh/cybio-selma-series/", "label": "instrument", "note": "automated liquid handler"},
+    {"url": "https://www.analytik-jena.com/products/chemical-analysis/sample-preparation/separation-and-extraction/pq-lc-series/", "label": "instrument", "note": "LC system"},
+    {"url": "https://www.analytik-jena.com/products/liquid-handling-automation/laboratory-equipment/labware-handling/cybio-quadstack-series/", "label": "instrument", "note": "labware handling device"},
+
+    {"url": "https://www.analytik-jena.com/products/chemical-analysis/sample-handling/autosampler/aas-autosampler-series/", "label": "instrument", "ambiguous": true, "note": "BOUNDARY: module attached to an AAS, but has its own control interface"},
+    {"url": "https://www.analytik-jena.com/products/chemical-analysis/sample-handling/sample-introduction/solid-aa-series/", "label": "instrument", "ambiguous": true, "note": "BOUNDARY: sample introduction accessory vs standalone device"},
+
+    {"url": "https://www.analytik-jena.com/products/", "label": "category_page", "note": "top-level product landing"},
+    {"url": "https://www.analytik-jena.com/products/chemical-analysis/elemental-analysis/icp-ms/", "label": "category_page", "note": "depth-4 taxonomy page"},
+    {"url": "https://www.analytik-jena.com/products/life-science/pcr-qpcr-thermal-cycler/", "label": "category_page", "note": "depth-3 taxonomy page"},
+    {"url": "https://www.analytik-jena.com/products/liquid-handling-automation/laboratory-equipment/labware-handling/", "label": "category_page", "note": "depth-4 taxonomy page"},
+
+    {"url": "https://www.analytik-jena.com/knowledge/whitepapers/", "label": "other", "note": "editorial index"},
+    {"url": "https://www.analytik-jena.com/company/news-press/press-releases/slas-2018-cybio-felix-automates-new-process-for-nucleic-acid-extraction/", "label": "other", "note": "press release naming a product - classic false positive trap"},
+    {"url": "https://www.analytik-jena.com/knowledge/brochures-flyers/", "label": "other", "note": "download index with PDF links - PDF-link signal trap"}
+  ]
+}

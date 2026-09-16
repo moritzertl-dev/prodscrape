@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "prodscrape": {
+      "command": "uv",
+      "args": ["run", "prodscrape-mcp"]
+    }
+  }
+}

@@ -1,0 +1,43 @@
+# Site recipe for BINDER (incubators, climate chambers, drying ovens).
+# Second vendor, added 2026-09-16 to check the pipeline is not overfit to analytik-jena.
+version: 1
+domain: binder-world.com
+base_url: https://www.binder-world.com
+platform: null
+locale: int-en
+
+discovery:
+  sitemap_declared_in_robots: true
+  sitemap_urls: []          # 49 sub-sitemaps, all declared in robots.txt
+  expected_total_urls: 2559
+
+product_urls:
+  # Heavily multilingual: de-de, int-en, uk-en, us-en, fr-fr, int-es, pl-pl and an
+  # unprefixed Chinese tree (/chan-pin). Inference picked de-de purely because it holds
+  # the most URLs; int-en is pinned here so the catalogue comes out in English.
+  include:
+    - "/int-en/products/*"
+  exclude:
+    - "/int-en/library/*"
+    - "/int-en/company/*"
+    - "/int-en/insights/*"
+    - "/int-en/service/*"
+  # NOTE: depth 6 here is an individual MODEL (kb-pro-260-with-ich-light-module),
+  # not a family. analytik-jena's depth 5 is a family (plasmaquant-ms-series). The two
+  # vendors publish at different granularities — see open_questions.
+  family_depth: 6
+  slug_suffix: null
+  expected_candidates: 99
+
+classification:
+  spec_headings: ["Technical data", "Technical Data", "Technische Daten"]
+  order_headings: ["Order information", "Ordering information"]
+  threshold: 0.6
+
+extraction:
+  spec_table_orientation: null    # not yet determined for this vendor
+
+open_questions:
+  - "Depth 6 is a model, not a family — decide whether to roll models up into families
+     (e.g. 'KB Pro series') or treat BINDER as variant-level and collapse on export."
+  - "/int-en/products/accessories/* is a real accessory branch; confirm classifier rejects it."

@@ -1,0 +1,53 @@
+# Site recipe — learn once, replay free (PIPELINE.md §2).
+# Derived from a live exploration on 2026-09-16 and locked in by tests/golden.
+# With this recipe a full re-scrape needs ZERO model calls.
+version: 1
+domain: analytik-jena.com
+base_url: https://www.analytik-jena.com
+platform: typo3
+locale: en
+
+discovery:
+  # robots.txt declares NO Sitemap: directive, but /sitemap.xml serves a valid index.
+  # Probing default paths is what makes this site work at all.
+  sitemap_declared_in_robots: false
+  sitemap_urls:
+    - https://www.analytik-jena.com/sitemap.xml
+  expected_total_urls: 854      # drift check: re-review the recipe if this moves a lot
+
+product_urls:
+  include:
+    - "/products/*"
+  exclude:
+    - "/knowledge/*"
+    - "/company/*"
+    - "/industries-solutions/*"
+    - "/stories/*"
+    - "/service-support/*"
+  family_depth: 5               # depths 1-4 are taxonomy landing pages
+  slug_suffix: "-series"        # strong but not universal: "hydride-systems" lacks it
+  expected_candidates: 56
+
+classification:
+  # No JSON-LD anywhere on this site — schema.org Product is unavailable as a signal.
+  has_jsonld: false
+  spec_headings: ["Technical Data"]
+  order_headings: ["Order Information"]
+  order_number_re: '\d{3}-\d{5}-\d'
+  threshold: 0.6
+
+extraction:
+  # Variants are ROWS, spec attributes are COLUMNS. Assuming the opposite transposes
+  # every value silently.
+  spec_table_orientation: variant_major
+  spec_table_selector: "table.table--default"
+  # The row-header <th class="product-identifier"> carries BOTH the variant name and its
+  # order number, e.g. "PlasmaQuant MS - high sensitive ... ICP-MS Instrument 818-08010-2"
+  variant_cell_class: "product-identifier"
+  order_table_header: ["Order number", "Description"]
+  brochure_table_header: ["Title", "Language", "Info"]
+
+# Known boundary cases awaiting a human ruling on instrument vs accessory:
+open_questions:
+  - "/products/chemical-analysis/sample-handling/autosampler/* — modules attached to an analyser"
+  - "/products/chemical-analysis/sample-handling/sample-introduction/* — same question"
