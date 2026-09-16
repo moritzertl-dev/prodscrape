@@ -139,7 +139,7 @@ Discovery failure modes seen so far, all three of them different:
 ## Driving it from an agent
 
 ```bash
-uv run prodscrape-mcp          # stdio MCP server, 13 tools
+uv run prodscrape-mcp          # stdio MCP server, 14 tools
 ```
 
 Register it with Claude Code, then follow [`SKILL.md`](SKILL.md). The design point: **there

@@ -31,7 +31,7 @@ Check with `uv run prodscrape paths` or the `storage_paths` MCP tool. To pin a s
 install somewhere predictable, add to the server config:
 
 ```json
-"env": { "PRODSCRAPE_HOME": "C:\Users\Moritz Ertl\prodscrape-data" }
+"env": { "PRODSCRAPE_HOME": "C:\\Users\\Moritz Ertl\\prodscrape-data" }
 ```
 
 Recipes are searched user-directory-first, then the bundled ones, so a recipe you write
@@ -41,7 +41,7 @@ overrides a shipped one without editing the package.
 
 Two files are committed and picked up automatically when you open this project:
 
-- `.mcp.json` — registers the `prodscrape` MCP server (13 tools)
+- `.mcp.json` — registers the `prodscrape` MCP server (14 tools)
 - `.claude/skills/scrape-product-catalogue/SKILL.md` — the procedure
 
 Restart Claude Code in this directory and approve the server when prompted. Check it with
