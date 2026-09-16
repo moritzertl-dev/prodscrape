@@ -83,3 +83,39 @@ def test_record_tools_report_errors_without_failing(tmp_path, monkeypatch):
     )
     assert result["applied"] == 1
     assert len(result["errors"]) == 1
+
+
+def test_skill_ships_inside_the_package():
+    """`uvx --refresh` updates the server; a separately uploaded SKILL.md does not.
+    Shipping it in the package is what keeps the procedure matched to the tools."""
+    from pathlib import Path
+
+    import prodscrape
+
+    packaged = Path(prodscrape.__file__).resolve().parent / "SKILL.md"
+    assert packaged.exists()
+    assert "scrape-product-catalogue" in packaged.read_text(encoding="utf-8")
+
+
+def test_claude_code_skill_copy_is_in_sync():
+    """Two copies exist because Claude Code reads .claude/skills/ and the package ships
+    its own. Drift between them is a silent failure, so it fails here instead."""
+    from pathlib import Path
+
+    import prodscrape
+
+    root = Path(prodscrape.__file__).resolve().parents[2]
+    packaged = Path(prodscrape.__file__).resolve().parent / "SKILL.md"
+    code_copy = root / ".claude" / "skills" / "scrape-product-catalogue" / "SKILL.md"
+    if not code_copy.exists():
+        return  # not a source checkout
+    assert code_copy.read_text(encoding="utf-8") == packaged.read_text(encoding="utf-8"), (
+        "SKILL.md copies have drifted — copy src/prodscrape/SKILL.md over "
+        ".claude/skills/scrape-product-catalogue/SKILL.md"
+    )
+
+
+def test_get_procedure_returns_the_packaged_skill():
+    result = mcp_server.get_procedure()
+    assert "procedure" in result
+    assert "Never ask for a page" in result["procedure"]

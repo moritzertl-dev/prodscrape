@@ -76,21 +76,26 @@ objects side by side and invalid JSON — Desktop then silently ignores the file
 ```
 
 Then **quit Claude Desktop completely** — tray icon → Quit, not just closing the window —
-and reopen it. The 14 tools appear under the tools icon in the chat box.
+and reopen it. The tools appear under the tools icon in the chat box.
 
 You do not need to run a server, open a port, or start anything at boot. Claude Desktop
 launches the process over stdio when it starts and shuts it down when it exits.
 
 ### The skill
 
-Desktop does not read `.claude/skills/`. Either:
+The procedure ships **inside the package** and is served by the `get_procedure` tool, so
+an agent can always read the version matching the installed server — just ask it to call
+`get_procedure`. Nothing to upload, and nothing that can go stale when you update.
 
-- **Settings → Capabilities → Skills**, uploading a zip whose root contains `SKILL.md`, or
-- paste the contents of [`SKILL.md`](SKILL.md) into a Project's custom instructions.
+To register it as a first-class Skill as well, note that Desktop does not read
+`.claude/skills/`. Either:
 
-If neither is available in your build, the MCP tools still work on their own — every tool
-carries its own description. The skill only supplies the procedure and the judgement
-guidance.
+- **Settings → Capabilities → Skills**, uploading a zip whose root contains `SKILL.md`
+  (`cd src/prodscrape && zip ../../skill.zip SKILL.md`), or
+- paste the contents of [`SKILL.md`](src/prodscrape/SKILL.md) into a Project's custom instructions.
+
+A skill registered this way is a **copy**, so it does not update when you run
+`uvx --refresh` — re-upload it, or rely on `get_procedure`, which cannot drift.
 
 ### Where files are written
 
@@ -115,8 +120,8 @@ To pin a shared install somewhere predictable, add an `env` block to the server 
 ```
 
 Recipes are searched user-directory-first, then the bundled ones, so a recipe you write
-overrides a shipped one without touching the package. The recipes for analytik-jena,
-BINDER and QInstruments ship inside the package — a fresh install already knows them.
+overrides a shipped one without touching the package. A few worked examples ship with it;
+they are never required, and the tool runs on vendors it has never seen.
 
 ### Updating
 
@@ -137,7 +142,7 @@ the git URL.
 git clone https://github.com/moritzertl-dev/prodscrape
 cd prodscrape
 uv sync
-uv run pytest -q        # 96 tests, fully offline
+uv run pytest -q        # 121 tests, fully offline
 ```
 
 Claude Code picks up two committed files automatically:
@@ -197,14 +202,14 @@ is only re-read on a real restart.
 
 ## Verified
 
-On 2026-09-16, from an empty temp directory with no checkout present:
+From an empty temp directory with no checkout present:
 
-- `uvx --from git+...` built the package from commit `4ca0627` and installed 39 packages
+- `uvx --from git+...` built the package from a clean clone and installed its dependencies
 - `prodscrape paths` resolved `home_source` to the platform user-data dir, not the
   temp directory
-- `prodscrape tree analytik-jena.com` discovered 853 URLs and loaded the **bundled**
-  recipe (`include=['/products/*'] family_depth=5`)
+- a full `tree` run discovered a vendor's URLs and loaded a **bundled** recipe
 - `prodscrape-mcp` started and exited cleanly over stdio
+- the MCP server has been confirmed working in Claude Desktop (Microsoft Store build)
 
-Not yet verified: Claude Desktop itself (not installed on this machine), and whether
-Desktop supports `/slash` invocation of skills the way Claude Code does.
+Not verified: whether Desktop supports `/slash` invocation of Skills the way Claude Code
+does. If it does not, ask in plain language instead — the tools work either way.

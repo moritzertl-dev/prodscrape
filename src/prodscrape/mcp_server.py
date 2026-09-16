@@ -420,6 +420,20 @@ def cost_report(domain: str, model: str = DEFAULT_MODEL) -> dict:
 
 
 @mcp.tool()
+def get_procedure() -> dict:
+    """The current step-by-step procedure for driving these tools.
+
+    Read this first if you are not already following it. It ships inside the installed
+    package, so it always matches the tools you actually have — unlike a copy uploaded
+    separately, which silently goes stale when the server is updated.
+    """
+    path = Path(__file__).resolve().parent / "SKILL.md"
+    if not path.exists():
+        return {"error": "SKILL.md missing from the installed package"}
+    return {"source": str(path), "procedure": path.read_text(encoding="utf-8")}
+
+
+@mcp.tool()
 def storage_paths() -> dict:
     """Where runs, caches and recipes are read from and written to.
 
