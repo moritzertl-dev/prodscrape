@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Reproducible, token-frugal product-catalogue scraper for lab instrument vendors"
 readme = "README.md"
 authors = [
-    { name = "ertlmoritz", email = "moritz.ertl@prodmail.de" }
+    { name = "Moritz Ertl", email = "moritz.ertl@unitelabs.io" }
 ]
 requires-python = ">=3.13"
 urls = { Homepage = "https://github.com/moritzertl-dev/prodscrape", Source = "https://github.com/moritzertl-dev/prodscrape" }
