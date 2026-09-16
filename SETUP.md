@@ -133,11 +133,24 @@ it always has.
 sees. Use the absolute path:
 
 ```json
-"command": "C:\\Users\\moritz ertl\\.local\\bin\\uv.exe",
-"args": ["tool", "run", "--from", "git+https://github.com/moritzertl-dev/prodscrape", "prodscrape-mcp"]
+{
+  "mcpServers": {
+    "prodscrape": {
+      "command": "C:\\Users\\moritz ertl\\.local\\bin\\uv.exe",
+      "args": [
+        "tool",
+        "run",
+        "--from",
+        "git+https://github.com/moritzertl-dev/prodscrape",
+        "prodscrape-mcp"
+      ]
+    }
+  }
+}
 ```
 
-(`uv tool run` is the same thing as `uvx`.)
+(`uv tool run` is the same thing as `uvx`; the absolute path avoids the PATH problem.
+Find yours with `where uv` in a terminal.)
 
 **Check the log:** `%APPDATA%\Claude\logs\mcp-server-prodscrape.log`
 
