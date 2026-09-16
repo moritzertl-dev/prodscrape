@@ -10,7 +10,7 @@ MCP server (`prodscrape-mcp`) and [`SKILL.md`](SKILL.md) so an agent can drive i
 
 ```bash
 uv sync
-uv run pytest -q          # 92 tests, fully offline (they read the golden HTTP cache)
+uv run pytest -q          # 96 tests, fully offline (they read the golden HTTP cache)
 ```
 
 ## Running it on a new vendor

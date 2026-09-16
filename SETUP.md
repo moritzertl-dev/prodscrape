@@ -1,5 +1,42 @@
 # Setup
 
+## Sharing it (no clone needed)
+
+Once this is on GitHub, a colleague installs nothing. `uvx` fetches, builds and runs it on
+demand, so their whole setup is one config block:
+
+```json
+{
+  "mcpServers": {
+    "prodscrape": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/moritzertl-dev/prodscrape", "prodscrape-mcp"]
+    }
+  }
+}
+```
+
+They need `uv` installed; that is all. The vendor recipes ship inside the package, so a
+fresh install already knows analytik-jena, BINDER and QInstruments.
+
+## Where files are written
+
+| | |
+|---|---|
+| inside a source checkout | `./runs`, `./cache`, `./recipes` |
+| installed (uvx, Desktop) | platform user-data dir, e.g. `%LOCALAPPDATA%\prodscrape` |
+| `PRODSCRAPE_HOME` set | that directory, always |
+
+Check with `uv run prodscrape paths` or the `storage_paths` MCP tool. To pin a shared
+install somewhere predictable, add to the server config:
+
+```json
+"env": { "PRODSCRAPE_HOME": "C:\Users\Moritz Ertl\prodscrape-data" }
+```
+
+Recipes are searched user-directory-first, then the bundled ones, so a recipe you write
+overrides a shipped one without editing the package.
+
 ## Claude Code (works in this repo already)
 
 Two files are committed and picked up automatically when you open this project:
