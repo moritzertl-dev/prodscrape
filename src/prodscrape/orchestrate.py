@@ -18,6 +18,7 @@ import json
 import time
 from pathlib import Path
 
+from .fetch import DEFAULT_DELAY
 from .llm import DEFAULT_BUDGET_USD, Ledger, Reasoner, resolve_backend
 from .paths import runs_dir
 from .pipeline import run_extract, run_scan
@@ -55,7 +56,7 @@ def catalogue(
     llm: str | None = None,
     budget_usd: float = DEFAULT_BUDGET_USD,
     limit: int | None = None,
-    delay: float = 1.0,
+    delay: float = DEFAULT_DELAY,
     pdfs: bool = True,
 ) -> dict:
     from .judge import review_records
@@ -169,6 +170,12 @@ def compose_report(r: dict) -> str:
             f"{usage['input_tokens']:,} input / {usage['output_tokens']:,} output tokens, "
             f"${usage['cost_usd']:.3f}. This run: ${r['run_usage_usd']:.3f}."
         )
+        if "claude-cli" in usage["backends"]:
+            lines.append(
+                "The $ figure is the list-price equivalent reported by the `claude` CLI. "
+                "On a Claude subscription (Pro/Max) these calls count against your plan's "
+                "usage limits and are not billed per token."
+            )
     else:
         lines.append("Model usage: none — every decision came from deterministic rules "
                      "or a saved recipe.")

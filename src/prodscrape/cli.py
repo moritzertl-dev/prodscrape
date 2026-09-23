@@ -137,8 +137,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prodscrape", description=__doc__)
-    parser.add_argument("--delay", type=float, default=1.0,
-                        help="seconds between requests to the same host (default 1.0)")
+    parser.add_argument("--delay", type=float, default=0.25,
+                        help="seconds between requests to the same host (default 0.25; "
+                             "a robots.txt Crawl-delay always wins)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_tree = sub.add_parser("tree", help="stages 0-1: site structure only, no page fetches")

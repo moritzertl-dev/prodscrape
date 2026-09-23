@@ -13,7 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .discover import discover_site
-from .fetch import Cache, Fetcher
+from .fetch import DEFAULT_DELAY, Cache, Fetcher
 from .inventory import (
     collapse_query_variants, prefix_tree, render_tree, select_candidates, url_depth,
 )
@@ -98,6 +98,7 @@ def _slug_words(url: str) -> str:
     return re.sub(r"[-_]+", " ", slug)[:80]
 
 
+PREFETCH = 24             # candidates fetched in parallel ahead of the loop
 HUB_MIN_LINKS = 8          # content links that make an unlabelled page a listing page
 DEFAULT_MAX_PAGES = 400
 DEFAULT_MAX_DEPTH = 2
@@ -186,7 +187,7 @@ def run_scan(
     domain: str,
     *,
     limit: int | None = None,
-    delay: float = 1.0,
+    delay: float = DEFAULT_DELAY,
     out_dir: Path | None = None,
     cache_directory: Path | None = None,
     reasoner: Reasoner | None = None,
@@ -296,6 +297,11 @@ def run_scan(
         def drain(position: int) -> int:
             nonlocal fetched
             while position < len(frontier.items) and fetched < max_pages:
+                # Fetch the next few candidates in parallel; the loop below then
+                # reads them from the cache in order, so results stay deterministic.
+                if position % PREFETCH == 0:
+                    ahead = frontier.items[position:position + PREFETCH]
+                    fetcher.prefetch([c.url for _, c in ahead][: max_pages - fetched])
                 kind, cand = frontier.items[position]
                 position += 1
                 reached = {"via": cand.via, "name": cand.name, "category": cand.category,

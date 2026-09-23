@@ -85,6 +85,17 @@ device on two pages merges, a generic shared title never does.
 | is a spec-less record a device | model over a one-line row | same |
 | fetching, parsing tables and text, units, device identity, export | deterministic code | a wrong table produces confident nonsense; code is auditable and free |
 
+**On a Claude subscription (Pro/Max, no API key)** the `claude` CLI backend uses your
+Claude Code login: the calls count against your plan's usage limits and are not billed
+per token. The report's "$" figure is then the CLI's list-price equivalent — a measure of
+size, not a bill. Without the CLI, the chat agent (Claude Desktop) does the judging
+itself, which also runs on your plan.
+
+**Speed.** Pages are fetched 6 at a time with at least 0.25 s between requests to the
+same host (a robots.txt `Crawl-delay` wins if larger; the Internet Archive gets 1.5 s).
+Model batches run 3 at a time. Most of a run's time is the vendor's own response time,
+which is why link triage — fetching fewer pages — matters more than the delay.
+
 Judgments come from the first available backend: the Anthropic API (credentials in the
 environment), else the local `claude` CLI (your Claude login, no tools, ~400 tokens of
 overhead per call), else the driving agent through `pending_*` / `record_*` tools. All

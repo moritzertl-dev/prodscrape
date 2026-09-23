@@ -130,7 +130,7 @@ def catalogue_vendor(
 # --------------------------------------------------------------------------- stage 0-1
 
 @metered
-def site_overview(domain: str, delay: float = 1.0) -> dict:
+def site_overview(domain: str, delay: float = 0.25) -> dict:
     """Profile a vendor site: platform, sitemap health, URL prefix tree, suggested rules.
 
     Cheap — a handful of HTTP requests, no product pages fetched. Always the first call
@@ -214,7 +214,7 @@ def put_recipe(
 # --------------------------------------------------------------------------- stage 2
 
 @metered
-def scan_site(domain: str, limit: int = 0, delay: float = 1.0) -> dict:
+def scan_site(domain: str, limit: int = 0, delay: float = 0.25) -> dict:
     """Shortlist candidate product pages and classify them deterministically.
 
     `limit=0` means no cap. Fetches are cached, so re-running is fast and free. Returns

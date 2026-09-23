@@ -56,17 +56,16 @@ def classify_pages(
 ) -> dict:
     """Label digests in batches; returns counts. Stops cleanly at the budget."""
     applied, failed, stopped = 0, 0, ""
-    for start in range(0, len(digests), BATCH):
-        batch = digests[start:start + BATCH]
-        body = "\n".join(_compact({"i": i, **d}) for i, d in enumerate(batch))
-        try:
-            reply = reasoner.ask_json("classify", CLASSIFY_SYSTEM, body, items=len(batch))
-        except BudgetExceeded as exc:
-            stopped = str(exc)
-            break
-        except (ValueError, RuntimeError) as exc:
+    batches = [digests[i:i + BATCH] for i in range(0, len(digests), BATCH)]
+    bodies = ["\n".join(_compact({"i": i, **d}) for i, d in enumerate(b)) for b in batches]
+    replies = reasoner.ask_many("classify", CLASSIFY_SYSTEM, bodies, [len(b) for b in batches])
+    for batch, reply in zip(batches, replies):
+        if isinstance(reply, BudgetExceeded):
+            stopped = str(reply)
+            continue
+        if isinstance(reply, Exception):
             failed += len(batch)
-            stopped = f"batch failed: {exc}"
+            stopped = f"batch failed: {reply}"
             continue
         for v in reply.get("verdicts", []):
             try:
@@ -134,8 +133,9 @@ def triage_links(reasoner: Reasoner, cands: list, known: dict[str, bool]) -> lis
     """
     out: list[bool | None] = [known.get(c.url) for c in cands]
     todo = [i for i, v in enumerate(out) if v is None]
-    for start in range(0, len(todo), TRIAGE_BATCH):
-        chunk = todo[start:start + TRIAGE_BATCH]
+    chunks = [todo[i:i + TRIAGE_BATCH] for i in range(0, len(todo), TRIAGE_BATCH)]
+    bodies = []
+    for chunk in chunks:
         lines = []
         for j, i in enumerate(chunk):
             c = cands[i]
@@ -144,12 +144,13 @@ def triage_links(reasoner: Reasoner, cands: list, known: dict[str, bool]) -> lis
             # The name is often the slug in words; send it once.
             name = "" if _same_words(c.name, slug) else c.name[:70]
             lines.append(f"{j} | {name} | {u.path[-80:]} | {c.category[:40]}")
-        try:
-            reply = reasoner.ask_json("triage", TRIAGE_SYSTEM, "\n".join(lines),
-                                      items=len(chunk))
-            kept = {int(x) for x in reply.get("keep", []) if str(x).lstrip("-").isdigit()}
-        except (BudgetExceeded, ValueError, RuntimeError):
+        bodies.append("\n".join(lines))
+    replies = reasoner.ask_many("triage", TRIAGE_SYSTEM, bodies, [len(c) for c in chunks])
+    for chunk, reply in zip(chunks, replies):
+        if isinstance(reply, Exception):
             kept = set(range(len(chunk)))          # fail open: fetch rather than lose
+        else:
+            kept = {int(x) for x in reply.get("keep", []) if str(x).lstrip("-").isdigit()}
         for j, i in enumerate(chunk):
             out[i] = j in kept
             known[cands[i].url] = j in kept
@@ -252,19 +253,18 @@ def relevance_rows(records: list, store: VerdictStore) -> list[dict]:
 def screen_relevance(reasoner: Reasoner, rows: list[dict], store: VerdictStore,
                      *, batch: int = 40) -> dict:
     applied, failed, stopped, removed = 0, 0, "", 0
-    for start in range(0, len(rows), batch):
-        chunk = rows[start:start + batch]
-        body = "\n".join(_compact({"i": i, **{k: v for k, v in r.items()
-                                             if k != "product_id"}})
-                         for i, r in enumerate(chunk))
-        try:
-            reply = reasoner.ask_json("relevance", RELEVANCE_SYSTEM, body, items=len(chunk))
-        except BudgetExceeded as exc:
-            stopped = str(exc)
-            break
-        except (ValueError, RuntimeError) as exc:
+    chunks = [rows[i:i + batch] for i in range(0, len(rows), batch)]
+    bodies = ["\n".join(_compact({"i": i, **{k: v for k, v in r.items()
+                                            if k != "product_id"}})
+                        for i, r in enumerate(c)) for c in chunks]
+    replies = reasoner.ask_many("relevance", RELEVANCE_SYSTEM, bodies, [len(c) for c in chunks])
+    for chunk, reply in zip(chunks, replies):
+        if isinstance(reply, BudgetExceeded):
+            stopped = str(reply)
+            continue
+        if isinstance(reply, Exception):
             failed += len(chunk)
-            stopped = f"batch failed: {exc}"
+            stopped = f"batch failed: {reply}"
             continue
         for v in reply.get("verdicts", []):
             try:

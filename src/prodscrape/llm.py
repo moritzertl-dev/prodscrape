@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -76,9 +77,11 @@ class Ledger:
     def __init__(self, run_dir: Path):
         self.path = Path(run_dir) / "ledger.jsonl"
 
+    _lock = threading.Lock()
+
     def append(self, row: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
+        with self._lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def rows(self) -> list[dict]:
@@ -271,6 +274,27 @@ def resolve_backend(preference: str | None = None, model: str | None = None) -> 
 
 class Reasoner:
     """Budgeted, ledgered access to a backend for one vendor run."""
+
+    PARALLEL = 3        # batches in flight at once; the budget may overshoot by this many
+
+    def ask_many(self, stage: str, system: str, bodies: list[str], items: list[int],
+                 effort: str = "low") -> list:
+        """Several independent questions at once. Each result is a reply or an exception.
+
+        A `claude -p` call takes 5-20 s; asked one after another, 15 classification
+        batches were minutes of waiting on a single process.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(args):
+            body, n = args
+            try:
+                return self.ask_json(stage, system, body, items=n, effort=effort)
+            except Exception as exc:          # returned, not raised: callers decide
+                return exc
+
+        with ThreadPoolExecutor(max_workers=self.PARALLEL) as pool:
+            return list(pool.map(one, zip(bodies, items)))
 
     def __init__(self, backend: Backend | None, ledger: Ledger,
                  budget_usd: float = DEFAULT_BUDGET_USD):

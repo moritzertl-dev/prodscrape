@@ -33,7 +33,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .extract import _is_order_list, _looks_like_non_spec
-from .fetch import BLOCKED_STATUSES, Cache, Fetcher
+from .fetch import BLOCKED_STATUSES, DEFAULT_DELAY, Cache, Fetcher
 from .navigation import registrable_domain
 from .paths import cache_dir, runs_dir
 from .tables import to_spec_table
@@ -200,7 +200,7 @@ def parse_pdf(data: bytes) -> dict[str, str]:
     return specs
 
 
-def enrich_with_datasheets(domain: str, *, delay: float = 1.0) -> dict:
+def enrich_with_datasheets(domain: str, *, delay: float = DEFAULT_DELAY) -> dict:
     """Read datasheets for thin devices of a finished extraction. Returns counts."""
     domain = domain.replace("https://", "").replace("http://", "").strip("/")
     out = runs_dir() / domain

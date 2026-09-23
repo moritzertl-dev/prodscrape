@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 import time
 import urllib.robotparser as robotparser
 from dataclasses import dataclass, asdict
@@ -35,6 +36,11 @@ BLOCKED_STATUSES = (401, 403, 406, 429, 503)
 ARCHIVE_CDX = "https://web.archive.org/cdx/search/cdx"
 ARCHIVE_WEB = "https://web.archive.org/web"
 ARCHIVE_MIN_DELAY = 1.5
+# Gap between two requests to the same host. 1 s made a 400-page vendor take 7+ minutes
+# of pure waiting; a quarter second is still gentle, and a vendor that asks for more in
+# robots.txt (Crawl-delay) gets more.
+DEFAULT_DELAY = 0.25
+MAX_WORKERS = 6
 
 # Bot-protection interstitials. Some are served with status 200, and the web archive
 # captures them like any other page, so status codes alone cannot identify them.
@@ -117,11 +123,14 @@ class Cache:
             return None
         return rec, body.read_text(encoding="utf-8")
 
+    _lock = threading.Lock()
+
     def put(self, rec: FetchRecord, text: str) -> None:
         Path(rec.body_path).write_text(text, encoding="utf-8")
-        self._index[rec.url] = rec
-        with self.index_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
+        with self._lock:                 # pages are fetched from several threads
+            self._index[rec.url] = rec
+            with self.index_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
 
     def body_path_for(self, sha: str) -> Path:
         return self.bodies / f"{sha}.html"
@@ -139,7 +148,7 @@ class Fetcher:
     def __init__(
         self,
         cache: Cache,
-        delay: float = 1.0,
+        delay: float = DEFAULT_DELAY,
         respect_robots: bool = True,
         archive_fallback: bool = True,
     ):
@@ -185,16 +194,57 @@ class Fetcher:
         parser = self._robots_for(url)
         return True if parser is None else parser.can_fetch(USER_AGENT, url)
 
-    def _throttle(self, url: str) -> None:
+    _throttle_lock = threading.Lock()
+
+    def _host_delay(self, url: str) -> float:
         host = urlparse(url).netloc
-        last = self._last_request.get(host)
         # The web archive is a shared public service; never hit it faster than this.
-        delay = max(self.delay, ARCHIVE_MIN_DELAY) if host == "web.archive.org" else self.delay
-        if last is not None:
-            wait = delay - (time.monotonic() - last)
-            if wait > 0:
-                time.sleep(wait)
-        self._last_request[host] = time.monotonic()
+        if host == "web.archive.org":
+            return max(self.delay, ARCHIVE_MIN_DELAY)
+        parser = self._robots.get(host)
+        asked = None
+        if parser is not None:
+            try:
+                asked = parser.crawl_delay(USER_AGENT)
+            except Exception:
+                asked = None
+        return max(self.delay, float(asked or 0))
+
+    def _throttle(self, url: str) -> None:
+        """Reserve the next free slot for this host, then wait for it.
+
+        Slots are reserved under a lock, so parallel fetches to one host stay spaced by
+        the delay while fetches to different hosts run side by side.
+        """
+        host = urlparse(url).netloc
+        delay = self._host_delay(url)
+        with self._throttle_lock:
+            now = time.monotonic()
+            last = self._last_request.get(host)
+            slot = now if last is None else max(now, last + delay)
+            self._last_request[host] = slot
+        if slot > now:
+            time.sleep(slot - now)
+
+    def prefetch(self, urls: list[str]) -> None:
+        """Fetch uncached URLs in parallel (bounded), so a later ``get`` is a cache hit.
+
+        Errors are swallowed here; the caller's own ``get`` raises them in order.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        todo = [u for u in dict.fromkeys(urls) if self.cache.get(u) is None]
+        if len(todo) < 2:
+            return
+
+        def one(u: str) -> None:
+            try:
+                self.get(u)
+            except Exception:
+                pass
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            list(pool.map(one, todo))
 
     def get(self, url: str, *, refresh: bool = False) -> tuple[FetchRecord, str]:
         """Return (record, text), reading from cache unless ``refresh`` is set."""
