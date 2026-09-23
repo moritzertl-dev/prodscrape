@@ -36,7 +36,7 @@ from .discover import discover_site
 from .fetch import Cache, Fetcher
 from .inventory import prefix_tree, render_tree
 from .paths import cache_dir, describe, runs_dir
-from .pipeline import run_extract, run_scan
+from .pipeline import run_extract, run_scan, table_records
 from .recipes import Recipe, infer_rules, load_recipe, save_recipe
 from .verdicts import VerdictStore
 
@@ -85,6 +85,43 @@ def _read_jsonl(path: Path) -> list[dict]:
 
 # --------------------------------------------------------------------------- one call
 
+def _job_reply(domain: str, current: dict) -> dict:
+    """What the agent sees about a background run — the same shape at every stage."""
+    state = current["state"]
+    if state == "done":
+        result = current["result"]
+        scan = result["scan"]
+        return {
+            "state": "done",
+            "report_to_user": result["report_to_user"],
+            "next_step": result["next_step"],
+            "devices": result["devices"],
+            "held_for_review": result["held_for_review"],
+            "pages_awaiting_judgment": result["pages_awaiting_judgment"],
+            "reasoning_backend": scan["reasoning_backend"],
+            "devices_csv": result["artifacts"]["devices_csv"],
+        }
+    if state == "running":
+        p = current.get("progress") or {}
+        return {
+            "state": "running",
+            "stage": p.get("stage", "starting"),
+            "detail": p.get("detail", ""),
+            "elapsed_s": current.get("elapsed_s"),
+            "next_step": f"call catalogue_status('{domain}') — it waits up to 40 s for "
+                         f"news. Tell the user the stage in one short line; do not "
+                         f"estimate anything.",
+        }
+    if state in ("failed", "stalled"):
+        return {
+            "state": state,
+            "log_tail": current.get("log_tail", ""),
+            "next_step": "tell the user the run " + state + " and quote the last log lines; "
+                         "calling catalogue_vendor again resumes from the cache",
+        }
+    return {"state": "idle", "next_step": f"call catalogue_vendor('{domain}') to start"}
+
+
 @metered
 def catalogue_vendor(
     domain: str,
@@ -93,38 +130,40 @@ def catalogue_vendor(
     budget_usd: float = 1.0,
     limit: int = 0,
 ) -> dict:
-    """START HERE. Catalogue one vendor end to end and get the report to show the user.
+    """START HERE. Start cataloguing one vendor in the background.
 
-    Runs discovery, scope, focused crawl, classification, extraction, datasheet PDFs and
-    the review queue. When a reasoning backend is available the judgment steps run
-    inside the call and it finishes on its own; otherwise it stops with `next_step`
-    naming exactly which tool to call.
+    Discovery, scope, focused crawl, classification, extraction, datasheet PDFs, review
+    and the automation screen run as a separate process, because a full run takes
+    minutes and a tool call must return within about a minute. This call starts it (or
+    reattaches to a run already going), waits up to 40 s, and returns its state.
 
-    Relay `report_to_user` verbatim — it carries the measured cost. Do not add your own
-    estimate. The first run of a vendor fetches pages politely (~1 s each) and can take
-    several minutes; everything is cached, so calling it again resumes quickly.
+    While `state` is "running", call `catalogue_status(domain)` until it is "done".
+    When done, relay `report_to_user` verbatim — it carries the measured cost. Do not
+    add your own estimate. Everything is cached: starting again after a failure resumes.
 
     llm: "auto" (default) | "anthropic" | "claude-cli" | "agent" (never call a model).
-    budget_usd: hard cap on model spend for this call.
+    budget_usd: hard cap on model spend for this run.
     """
-    from .orchestrate import catalogue
+    from . import jobs
 
-    result = catalogue(
-        _clean(domain), manufacturer=manufacturer, llm=llm, budget_usd=budget_usd,
-        limit=limit or None,
-    )
-    scan = result["scan"]
-    return {
-        "report_to_user": result["report_to_user"],
-        "next_step": result["next_step"],
-        "devices": result["devices"],
-        "held_for_review": result["held_for_review"],
-        "pages_awaiting_judgment": result["pages_awaiting_judgment"],
-        "reasoning_backend": scan["reasoning_backend"],
-        "scope_decided_by": scan["scope"]["decided_by"],
-        "devices_csv": result["artifacts"]["devices_csv"],
-        "report_path": result["artifacts"]["report"],
-    }
+    domain = _clean(domain)
+    jobs.start(domain, manufacturer=manufacturer, llm=llm, budget_usd=budget_usd,
+               limit=limit or None)
+    return _job_reply(domain, jobs.wait(domain))
+
+
+@metered
+def catalogue_status(domain: str) -> dict:
+    """Progress of a background run started by `catalogue_vendor`; the report when done.
+
+    Waits up to 40 s for the run to finish before answering, so calling it in a loop is
+    cheap. Returns `state` ("running" with the current stage, "done" with
+    `report_to_user`, or "failed"/"stalled" with the log tail) and `next_step`.
+    """
+    from . import jobs
+
+    domain = _clean(domain)
+    return _job_reply(domain, jobs.wait(domain))
 
 
 # --------------------------------------------------------------------------- stage 0-1
@@ -369,7 +408,7 @@ def device_table(
     """
     from .export import CORE_COLUMNS
 
-    rows = [r for r in _read_jsonl(_run_dir(domain) / "extracted.jsonl") if r["specs"]]
+    rows = table_records(_run_dir(domain))
     if category:
         rows = [r for r in rows if r["category"] == category]
 
@@ -418,9 +457,9 @@ def open_device_table(domain: str, open_browser: bool = True) -> dict:
     from .view import write_and_open
 
     out = _run_dir(domain)
-    records = _read_jsonl(out / "extracted.jsonl")
+    records = table_records(out)
     if not records:
-        return {"error": f"no extraction for {domain}; run extract_devices first"}
+        return {"error": f"no device table for {domain}; run catalogue_vendor first"}
 
     path, opened = write_and_open(
         records,
@@ -430,7 +469,7 @@ def open_device_table(domain: str, open_browser: bool = True) -> dict:
         open_it=open_browser,
     )
     return {
-        "devices": sum(1 for r in records if r["specs"]),
+        "devices": len(records),
         "view": str(path),
         "opened_in_browser": opened,
         "csv": str(out / "devices.csv"),
@@ -444,7 +483,7 @@ def open_device_table(domain: str, open_browser: bool = True) -> dict:
 @metered
 def device_specs(domain: str, name: str) -> dict:
     """Every specification of one device, with raw source text preserved."""
-    for row in _read_jsonl(_run_dir(domain) / "extracted.jsonl"):
+    for row in table_records(_run_dir(domain)):
         if row["name"].lower() == name.lower():
             return {
                 "name": row["name"],
@@ -482,7 +521,7 @@ def export_table(domain: str, category: str | None = None) -> dict:
                 name=r["name"], url=r["url"], category=r["category"],
                 specs={k: SpecValue(**v) for k, v in r["specs"].items()},
             )
-            for r in _read_jsonl(out / "extracted.jsonl") if r["specs"]
+            for r in table_records(out)
         ]
         rows, columns = pivot_category(records, category)
         if rows:
@@ -584,7 +623,7 @@ def run_status(domain: str) -> dict:
         "classified_total": len(classified),
         "classified_unknown": sum(1 for r in classified if r["label"] == "unknown"),
         "extracted": bool(extracted),
-        "devices": sum(1 for r in extracted if r["specs"]),
+        "devices": len(table_records(out)),
         "awaiting_review": sum(
             1 for r in extracted
             if not r["specs"] and store.review_for(r["product_id"]) is None

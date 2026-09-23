@@ -70,11 +70,17 @@ def catalogue(
     spent_before = ledger.spent_usd()
     reasoner = Reasoner(resolve_backend(llm), ledger, budget_usd + spent_before)
 
-    scan = run_scan(domain, limit=limit, delay=delay, reasoner=reasoner)
+    from .jobs import Progress
+
+    progress = Progress(out)
+    progress("scan", "discovering the site and deciding scope")
+    scan = run_scan(domain, limit=limit, delay=delay, reasoner=reasoner, progress=progress)
+    progress("extract", f"{scan['pages_fetched']} pages fetched; extracting devices")
     extract = run_extract(domain, manufacturer=manufacturer)
 
     pdf_summary = None
     if pdfs:
+        progress("datasheets", "reading datasheet PDFs for thin pages")
         pdf_summary = enrich_with_datasheets(domain, delay=delay)
         if pdf_summary.get("devices_enriched") or pdf_summary.get("records_recovered"):
             extract = run_extract(domain, manufacturer=manufacturer)
@@ -82,6 +88,7 @@ def catalogue(
     review = None
     pending_review = review_rows(out)
     if pending_review and reasoner.available:
+        progress("review", f"judging {len(pending_review)} records without specs")
         review = review_records(reasoner, pending_review, VerdictStore.load(out))
         extract = run_extract(domain, manufacturer=manufacturer)
 
@@ -96,6 +103,7 @@ def catalogue(
         rows = [r for r in relevance_rows(_read_jsonl(out / "extracted.jsonl"), store)
                 if r["product_id"] in accepted_ids]
         if rows:
+            progress("relevance", f"screening {len(rows)} devices: single device, automatable")
             relevance = screen_relevance(reasoner, rows, store)
             extract = run_extract(domain, manufacturer=manufacturer)
 
@@ -125,6 +133,7 @@ def catalogue(
     result["report_to_user"] = compose_report(result)
     result["next_step"] = next_step(result)
     (out / "report.md").write_text(result["report_to_user"], encoding="utf-8")
+    progress("done", f"{result['devices']} devices")
     (out / "catalogue_manifest.json").write_text(
         json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     return result

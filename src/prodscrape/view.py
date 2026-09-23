@@ -137,7 +137,9 @@ def _chips(value: str) -> str:
 
 def render(records: list[dict], *, domain: str, csv_path: str) -> str:
     """Render extracted device records as a standalone HTML page."""
-    devices = [r for r in records if r.get("specs")]
+    # Callers pass exactly the table's rows (pipeline.table_records); filtering here
+    # again is how the view once drifted from devices.csv.
+    devices = list(records)
     categories = sorted({r["category"] for r in devices if r.get("category")})
     interfaces = sorted({i for r in devices for i in r.get("interfaces", [])})
 

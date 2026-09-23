@@ -331,3 +331,62 @@ def test_overview_pages_are_excluded_whatever_their_relevance(tmp_path):
                      [{"product_id": "a", "name": "Liquid handling components"}], store)
     v = store.relevance_for("a")
     assert v["verdict"] == "no" and v["reason"].startswith("not a single device")
+
+
+# --- one table, everywhere; background runs --------------------------------------------
+
+def _write_run(run_dir, table_ids, records):
+    import csv as _csv
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with (run_dir / "extracted.jsonl").open("w", encoding="utf-8") as fh:
+        for r in records:
+            fh.write(json.dumps(r) + "\n")
+    with (run_dir / "devices.csv").open("w", encoding="utf-8-sig", newline="") as fh:
+        w = _csv.DictWriter(fh, fieldnames=["product_id", "name"])
+        w.writeheader()
+        for i in table_ids:
+            w.writerow({"product_id": i, "name": i})
+
+
+def test_views_and_counts_follow_devices_csv_not_the_raw_extraction(tmp_path, monkeypatch):
+    """LiCONiC: the browser view showed 26 rows while devices.csv held 32."""
+    from prodscrape import mcp_server
+    from prodscrape.pipeline import table_records
+
+    monkeypatch.setenv("PRODSCRAPE_HOME", str(tmp_path))
+    base = {"manufacturer": "L", "category": "", "url": "u", "description": "",
+            "image_url": "", "datasheet_urls": [], "interfaces": [],
+            "source_variants": [], "merge_reason": ""}
+    records = [
+        {**base, "product_id": "accepted-no-specs", "name": "StoreX STX44", "specs": {}},
+        {**base, "product_id": "excluded-with-specs", "name": "BiOLiX STC",
+         "specs": {"t": {"raw": "37 C"}}},
+    ]
+    run = tmp_path / "runs" / "l.com"
+    _write_run(run, ["accepted-no-specs"], records)
+    assert [r["product_id"] for r in table_records(run)] == ["accepted-no-specs"]
+    view = mcp_server.open_device_table("l.com", open_browser=False)
+    assert view["devices"] == 1
+    assert mcp_server.run_status("l.com")["devices"] == 1
+
+
+def test_background_job_states(tmp_path, monkeypatch):
+    import time as _time
+
+    from prodscrape import jobs
+
+    monkeypatch.setenv("PRODSCRAPE_HOME", str(tmp_path))
+    run = tmp_path / "runs" / "v.com"
+    run.mkdir(parents=True)
+    assert jobs.status("v.com")["state"] == "idle"
+    log = run / "job.log"
+    log.write_text("crawling\n", encoding="utf-8")
+    job = {"pid": 1, "started_at": _time.time(), "log": str(log)}
+    (run / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    jobs.Progress(run)("crawl", "10 pages fetched")
+    assert jobs.status("v.com")["state"] == "running"
+    log.write_text("Traceback (most recent call last):\n  boom\n", encoding="utf-8")
+    assert jobs.status("v.com")["state"] == "failed"
+    (run / "catalogue_manifest.json").write_text("{}", encoding="utf-8")
+    assert jobs.status("v.com")["state"] == "done"

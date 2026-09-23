@@ -194,6 +194,7 @@ def run_scan(
     llm: str | None = None,
     budget_usd: float | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
+    progress=None,
 ) -> dict:
     """Stages 0-2 for one vendor. Returns a summary dict; writes artifacts to disk.
 
@@ -310,6 +311,10 @@ def run_scan(
                 try:
                     rec, html = fetcher.get(cand.url)
                     fetched += 1
+                    if progress is not None:
+                        progress("crawl", f"{fetched} pages fetched, "
+                                          f"{len(frontier.items) - position} queued",
+                                 force=False)
                     if rec.status >= 400:
                         raise RuntimeError(f"HTTP {rec.status}")
                 except Exception as exc:
@@ -416,6 +421,8 @@ def run_scan(
         judged = None
         pending = [r for r in rows if r["label"] == "unknown"
                    and store.classification_for(r["url"]) is None]
+        if progress is not None and pending:
+            progress("classify", f"judging {len(pending)} ambiguous pages")
         if pending and reasoner.available:
             digests = []
             for r in pending:
@@ -496,6 +503,31 @@ def run_scan(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return manifest
+
+
+def table_records(run_dir: Path) -> list[dict]:
+    """The rows of ``devices.csv``, as full extracted records, in table order.
+
+    The one source of truth for "what is in the table". Everything that shows or counts
+    devices goes through here. Filtering extracted.jsonl on "has specs" instead made the
+    browser view disagree with devices.csv on LiCONiC: it hid ten spec-less devices a
+    review had accepted and showed four the relevance screen had excluded (26 vs 32).
+    """
+    import csv
+
+    run_dir = Path(run_dir)
+    table = run_dir / "devices.csv"
+    extracted = run_dir / "extracted.jsonl"
+    if not table.exists() or not extracted.exists():
+        return []
+    with table.open(encoding="utf-8-sig") as fh:
+        order = [row["product_id"] for row in csv.DictReader(fh)]
+    by_id = {}
+    for line in extracted.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            r = json.loads(line)
+            by_id.setdefault(r["product_id"], r)
+    return [by_id[i] for i in order if i in by_id]
 
 
 def _name_key(name: str) -> str:

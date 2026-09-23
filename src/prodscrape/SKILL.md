@@ -15,27 +15,35 @@ token or cost figure of your own.
 
 ## Procedure
 
-**1. Call `catalogue_vendor(domain, manufacturer)`.** One call runs everything:
-discovery, scope, crawl, classification, extraction, datasheet PDFs, review, report.
-The first run of a vendor can take several minutes. If the call times out, call it
-again with the same arguments; everything already fetched is cached, so it resumes
-quickly.
+**1. Call `catalogue_vendor(domain, manufacturer)`.** It starts the whole run —
+discovery, scope, crawl, classification, extraction, datasheets, review, automation
+screen — as a background process and answers within a minute.
 
-**2. Read `next_step` and do exactly what it says.** There are three cases.
+While the answer says `"state": "running"`, call `catalogue_status(domain)` again. Each
+call waits up to 40 s. Between calls, tell the user the `stage` in one short line
+("crawling: 120 pages fetched"), nothing more. A typical vendor takes 2-10 minutes.
+Do not write recipes, split the scan, or call stage tools to work around the time
+limit — the background run exists so you never have to.
+
+If the state is `failed` or `stalled`, quote the log lines it returns and call
+`catalogue_vendor` again once; it resumes from the cache.
+
+**2. When `state` is "done", read `next_step` and do exactly what it says.** There are three cases.
 
 - `done — ...` → go to step 3.
 - `call pending_classifications ...` → call `pending_classifications(domain)`. It
   returns `instructions` and a list of `digests`. Label each digest by following the
   `instructions` text, then send every verdict to
   `record_classifications(domain, verdicts=[{url, label, reason}])`. Repeat until
-  `pending_total` is 0, then call `catalogue_vendor` again with the same arguments.
+  `pending_total` is 0, then call `catalogue_vendor` again with the same arguments
+  and follow step 1.
 - `call pending_reviews ...` → call `pending_reviews(domain)`. For each row decide
   `device` or `not-a-device`, then send them to
   `record_reviews(domain, verdicts=[{product_id, verdict, reason}])`. Then call
   `catalogue_vendor` again.
 
 This loop only happens when no model backend is configured on the server. When one is
-configured, the first call finishes on its own.
+configured, the background run finishes on its own.
 
 **3. Call `open_device_table(domain)`.** It opens the table in the browser.
 

@@ -35,7 +35,7 @@ including the config block and troubleshooting: [`SETUP.md`](SETUP.md).
 From a checkout:
 
 ```bash
-uv sync && uv run pytest -q     # 173 tests, fully offline
+uv sync && uv run pytest -q     # 177 tests, fully offline
 uv run prodscrape run <domain> --manufacturer "Name"
 uv run prodscrape tree <domain>
 ```
