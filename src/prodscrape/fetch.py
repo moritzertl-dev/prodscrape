@@ -31,6 +31,24 @@ BROWSER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
 )
 
+BLOCKED_STATUSES = (401, 403, 406, 429, 503)
+ARCHIVE_CDX = "https://web.archive.org/cdx/search/cdx"
+ARCHIVE_WEB = "https://web.archive.org/web"
+ARCHIVE_MIN_DELAY = 1.5
+
+# Bot-protection interstitials. Some are served with status 200, and the web archive
+# captures them like any other page, so status codes alone cannot identify them.
+_CHALLENGE_RE = re.compile(
+    r"<title>\s*(?:Just a moment\.\.\.|Attention Required! \| Cloudflare|Access Denied)\s*</title>"
+    r"|cf-browser-verification|challenge-platform|_Incapsula_Resource",
+    re.I,
+)
+
+
+def looks_like_challenge(text: str) -> bool:
+    return bool(_CHALLENGE_RE.search(text))
+
+
 _META_CHARSET_RE = re.compile(rb"""<meta[^>]*charset=["']?([A-Za-z0-9_-]+)""", re.I)
 
 
@@ -46,6 +64,10 @@ class FetchRecord:
     content_type: str
     encoding: str
     body_path: str
+    # "live", or "archive" when the vendor blocked us and a public web-archive snapshot
+    # was used instead. Defaults keep cache indexes written before this field readable.
+    source: str = "live"
+    archived_at: str = ""
 
 
 def _decode(raw: bytes, content_type: str) -> tuple[str, str]:
@@ -114,8 +136,16 @@ class Fetcher:
     Respects robots.txt and enforces a minimum delay between requests to the same host.
     """
 
-    def __init__(self, cache: Cache, delay: float = 1.0, respect_robots: bool = True):
+    def __init__(
+        self,
+        cache: Cache,
+        delay: float = 1.0,
+        respect_robots: bool = True,
+        archive_fallback: bool = True,
+    ):
         self.cache = cache
+        self.archive_fallback = archive_fallback
+        self.archive_hits: list[str] = []   # URLs served from the web archive
         self.delay = delay
         self.respect_robots = respect_robots
         self._last_request: dict[str, float] = {}
@@ -158,8 +188,10 @@ class Fetcher:
     def _throttle(self, url: str) -> None:
         host = urlparse(url).netloc
         last = self._last_request.get(host)
+        # The web archive is a shared public service; never hit it faster than this.
+        delay = max(self.delay, ARCHIVE_MIN_DELAY) if host == "web.archive.org" else self.delay
         if last is not None:
-            wait = self.delay - (time.monotonic() - last)
+            wait = delay - (time.monotonic() - last)
             if wait > 0:
                 time.sleep(wait)
         self._last_request[host] = time.monotonic()
@@ -168,7 +200,14 @@ class Fetcher:
         """Return (record, text), reading from cache unless ``refresh`` is set."""
         if not refresh:
             hit = self.cache.get(url)
-            if hit is not None:
+            # A block recorded before the archive fallback existed is retried once; one
+            # recorded after it ("blocked") is final, so re-runs stay offline.
+            stale_block = (
+                hit is not None and self.archive_fallback
+                and hit[0].source == "live"
+                and (hit[0].status in BLOCKED_STATUSES or looks_like_challenge(hit[1][:4000]))
+            )
+            if hit is not None and not stale_block:
                 return hit
         if not self.allowed(url):
             raise PermissionError(f"robots.txt disallows {url}")
@@ -182,18 +221,118 @@ class Fetcher:
             if retry.status_code < 400:
                 self.ua_fallbacks.append(url)
                 resp = retry
+        source, archived_at = "live", ""
+        # Where the vendor itself sent us (agilent.com -> www.agilent.com) before it
+        # blocked us. An archived page keeps this as its location, or discovery stays on
+        # a host with no robots.txt and no sitemap.
+        live_final = str(resp.url)
+        blocked = resp.status_code in BLOCKED_STATUSES or (
+            resp.status_code == 200 and looks_like_challenge(resp.text[:4000])
+        )
+        if blocked and self.archive_fallback:
+            archived = self._from_archive(url)
+            if archived is not None:
+                resp, archived_at = archived
+                source = "archive"
+                self.archive_hits.append(url)
+            else:
+                source = "blocked"
+
         content_type = resp.headers.get("Content-Type", "")
         text, encoding = _decode(resp.content, content_type)
         sha = hashlib.sha256(resp.content).hexdigest()
         rec = FetchRecord(
             url=url,
-            final_url=str(resp.url),
+            # An archived page keeps the vendor URL as its identity; the archive is
+            # provenance (source + archived_at), not a location to crawl onward from.
+            final_url=live_final if source == "archive" else str(resp.url),
             status=resp.status_code,
             sha256=sha,
             fetched_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             content_type=content_type,
             encoding=encoding,
             body_path=str(self.cache.body_path_for(sha)),
+            source=source,
+            archived_at=archived_at,
         )
         self.cache.put(rec, text)
         return rec, text
+
+    def _from_archive(self, url: str) -> tuple[httpx.Response, str] | None:
+        """The newest *successful* public web-archive capture of a blocked page.
+
+        Bot protection (Akamai on agilent.com, a Cloudflare challenge on beckman.com)
+        answers every non-browser client with 403, on every page. Defeating it is not
+        something this tool does. The Internet Archive's copy of the same public page is
+        a legitimate, attributable source: the record keeps ``source="archive"`` and the
+        capture timestamp, and the vendor's robots.txt has already been honoured.
+
+        "Newest" alone is not enough — the archive also captures the challenge page
+        itself, so beckman.com's latest homepage snapshot is a 403. Only 200 captures
+        are considered.
+
+        Fast path first: ``/web/<today>id_/<url>`` redirects to the capture nearest to
+        today in one request. The CDX index (20s+ per query) is consulted only when that
+        capture is missing or is a challenge page — on a 300-page vendor this is the
+        difference between minutes and hours.
+        """
+        try:
+            self._throttle(ARCHIVE_WEB)
+            today = time.strftime("%Y%m%d", time.gmtime())
+            resp = self._client.get(f"{ARCHIVE_WEB}/{today}id_/{url}", timeout=60.0)
+            if resp.status_code == 200 and not looks_like_challenge(resp.text[:4000]):
+                m = re.search(r"/web/(\d{8})", str(resp.url))
+                stamp = m.group(1) if m else today
+                return resp, f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+        except httpx.HTTPError:
+            pass
+        try:
+            cdx = None
+            # The CDX index is slow (20s+ is normal), and a timeout here would record
+            # the page as permanently blocked — so allow for it and retry once.
+            for _ in range(2):
+                self._throttle(ARCHIVE_CDX)
+                try:
+                    cdx = self._client.get(
+                        ARCHIVE_CDX,
+                        params={"url": url, "fl": "timestamp",
+                                "filter": "statuscode:200", "limit": "-1"},
+                        timeout=90.0,
+                    )
+                    break
+                except httpx.TimeoutException:
+                    continue
+            if cdx is None or cdx.status_code != 200:
+                return None
+            # Newest first. The archive also stores challenge pages served with 200,
+            # so a capture is only accepted once its body is known not to be one.
+            for stamp in list(reversed(cdx.text.split()))[:4]:
+                self._throttle(ARCHIVE_CDX)
+                resp = self._client.get(f"{ARCHIVE_WEB}/{stamp}id_/{url}", timeout=90.0)
+                if resp.status_code != 200 or looks_like_challenge(resp.text[:4000]):
+                    continue
+                return resp, f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+            return None
+        except httpx.HTTPError:
+            return None
+
+    def archive_urls(self, prefix: str, limit: int = 20_000) -> list[str]:
+        """URLs the web archive holds under a prefix — discovery for a blocked site.
+
+        Used only when the vendor's own sitemap is unreachable. Returns distinct HTML
+        pages captured with status 200.
+        """
+        try:
+            self._throttle(ARCHIVE_CDX)
+            resp = self._client.get(
+                ARCHIVE_CDX,
+                params={"url": f"{prefix}*", "fl": "original", "collapse": "urlkey",
+                        "filter": ["statuscode:200", "mimetype:text/html"],
+                        "limit": str(limit)},
+                timeout=120.0,
+            )
+        except httpx.HTTPError:
+            return []
+        if resp.status_code != 200:
+            return []
+        return [line.strip() for line in resp.text.splitlines() if line.strip()]

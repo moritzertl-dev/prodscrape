@@ -5,155 +5,68 @@ description: Build a reproducible table of a lab-instrument manufacturer's devic
 
 # Scraping a vendor product catalogue
 
-You drive the `prodscrape` MCP tools. The Python side does everything deterministic —
-fetching, caching, table parsing, device identity, export. **You supply judgment only
-where structure cannot decide**, and your judgments are written to disk so they are never
-asked twice.
+This skill drives the `prodscrape` MCP tools. **If those tools are not available, say so
+and stop** — nothing here can be done without them, and a table written from memory is
+not a scrape.
 
-## The one rule that matters
-
-**Never ask for a page.** No tool returns HTML, and you should never want it to. The
-largest thing you will see is a ~200-token page digest. A single product page is 500 KB;
-the whole tier-B queue for a vendor is about 2,000 tokens. If you find yourself wanting
-raw page content, the answer is a better deterministic rule in the recipe, not a bigger
-context window.
+The tools do all the work, including cost accounting. Your job is to call them in the
+order below and relay what they return. Do not improvise steps, and never produce a
+token or cost figure of your own.
 
 ## Procedure
 
-### 0. State the expected cost — `estimate_cost(domain)`
+**1. Call `catalogue_vendor(domain, manufacturer)`.** One call runs everything:
+discovery, scope, crawl, classification, extraction, datasheet PDFs, review, report.
+The first run of a vendor can take several minutes. If the call times out, call it
+again with the same arguments; everything already fetched is cached, so it resumes
+quickly.
 
-After the first scan, before you start judging anything, report what the run is expected
-to cost and say so in one line. At the end, call `cost_report(domain)` and report what it
-actually cost. Both figures count **only what the pipeline hands to the model** — your own
-conversation context is billed too and is not visible to these tools, so present them as a
-floor, never as the whole bill.
+**2. Read `next_step` and do exactly what it says.** There are three cases.
 
-### 1. Look at the site — `site_overview(domain)`
+- `done — ...` → go to step 3.
+- `call pending_classifications ...` → call `pending_classifications(domain)`. It
+  returns `instructions` and a list of `digests`. Label each digest by following the
+  `instructions` text, then send every verdict to
+  `record_classifications(domain, verdicts=[{url, label, reason}])`. Repeat until
+  `pending_total` is 0, then call `catalogue_vendor` again with the same arguments.
+- `call pending_reviews ...` → call `pending_reviews(domain)`. For each row decide
+  `device` or `not-a-device`, then send them to
+  `record_reviews(domain, verdicts=[{product_id, verdict, reason}])`. Then call
+  `catalogue_vendor` again.
 
-A handful of requests, no product pages. Read the returned prefix tree and check:
+This loop only happens when no model backend is configured on the server. When one is
+configured, the first call finishes on its own.
 
-- `total_urls` is non-zero. If it is zero the site has no usable sitemap and no crawlable
-  links; say so rather than guessing.
-- `robots_readable` is true. If false, the sitemap fields are **not trustworthy** — a
-  failed robots fetch is a fault in the run, not a fact about the site.
-- `discovered_via_crawl` tells you the sitemap was missing or broken and a bounded crawl
-  was used instead.
-- If `saved_recipe` is present, skip to step 3. The vendor is already understood.
+**3. Call `open_device_table(domain)`.** It opens the table in the browser.
 
-### 2. Write the recipe — `put_recipe(...)`
+**4. Reply with `report_to_user`, copied verbatim.** It already contains the device
+count, what is held for review, the measured model usage and cost, the scope decision,
+and every caveat (archived pages, page budget reached, heuristic scope). Add nothing
+before it. After it, add at most one sentence, and only if something went wrong that
+the report does not already say.
 
-`suggested_rules` is a deterministic guess from URL structure. **Verify it against the
-tree before saving**, because it is wrong in predictable ways:
+## Rules
 
-- **Locale.** It picks the language branch with the most URLs, which is often not English.
-  BINDER's guess was `de-de`; the right answer was `int-en`.
-- **Missed branches.** It returns one catalogue root. QInstruments has two — `/automation`
-  and `/laboratory` — and the guess found only the first.
-- **No product token.** If the notes say "verify this", the site has no `/products/` path
-  and the guess is a largest-branch fallback. Read the tree yourself.
-- **Leave `leaf_only` on.** Candidates are pages with no children, at any depth — that
-  is what a product page is, structurally. Do not replace it with a `family_depth`:
-  catalogues nest products at several levels, and a single depth fails both ways, by
-  dropping products above and below it and by admitting category pages that happen to
-  sit at it. On BINDER a fixed depth was silently skipping 40 real product pages.
-- **`family_depth`** is only a scoring hint now. Set `family_depths` (a list) if a
-  vendor genuinely needs an explicit whitelist of levels.
+- **Never estimate cost yourself.** The report's figures are measured by the server:
+  every model call, and every tool result handed to you. If the user asks what a run
+  will cost *before* running it, call `estimate_cost(domain)` and quote its `summary`.
+  If it returns no estimate, say there is no basis yet.
+- **Never print the device table into the chat.** `open_device_table` shows it.
+  `device_table` and `device_specs` exist for when the user asks a question about
+  specific devices.
+- **Labels for classification:** `instrument`, `accessory`, `consumable`, `software`,
+  `service`, `category_page`, `other`. Only `instrument` becomes a row. Always give a
+  one-line `reason`; it is stored and is how a wrong call gets found later.
+- **Do not fetch vendor pages yourself** or reason from page HTML. If a result looks
+  wrong, report what looks wrong, and name the device or URL.
 
-Add `spec_headings` if the vendor words it unusually. These *extend* the built-in defaults
-(`technical data`, `specifications`, `technische daten`), so a partial recipe is always
-safe.
+## Other tools (only when asked)
 
-A saved recipe is what makes every later run free.
-
-### 3. Scan — `scan_site(domain)`
-
-Fetches candidates and classifies them from structural signals. Returns counts only.
-Be patient: first run is rate-limited at ~1s per page; re-runs read cache and take seconds.
-
-### 4. Judge the leftovers — `pending_classifications` → `record_classifications`
-
-This is your first real job. You get digests for pages the signals could not decide,
-typically 10-25% of candidates.
-
-Label each: `instrument`, `accessory`, `consumable`, `software`, `service`,
-`category_page`, `other`. Only `instrument` proceeds.
-
-Guidance from real cases:
-
-- "Disposable Tips for X" → `consumable`
-- An interchangeable pipetting head or a sample-introduction module → `accessory`
-- "Automated ELISA", "Automated NGS Library Preparation" → `other`; these are application
-  and workflow pages, not products
-- A portfolio landing page → `category_page`
-- An integrated workcell → `instrument`; it is hardware
-
-**Always give a `reason`.** It is stored and is what makes a wrong call reviewable later.
-
-Then call `scan_site` again to fold the verdicts in, and confirm `pending_total` is 0.
-
-### 5. Extract — `extract_devices(domain, manufacturer)`
-
-Fully offline. Produces one row per device, merging variants that differ only in
-non-functional ways (mains voltage, fuse rating, article number, bundled software).
-A functional *hardware* difference always makes a separate device.
-
-### 6. Settle the review queue — `pending_reviews` → `record_reviews`
-
-Records with no extracted specifications. **Read these carefully: most are usually real
-devices whose spec table failed to parse, not junk.** On analytik-jena the queue started
-at 25 rows, of which 22 were genuine instruments with unparsed tables.
-
-So before recording `not-a-device` verdicts, ask whether the name looks like a real
-instrument. If a queue is large and full of plausible device names, that is a **parsing
-bug to report, not a backlog to adjudicate**. Verdict `device` promotes the row into the
-table even without specs.
-
-### 7. Deliver — `open_device_table(domain)`
-
-Call it. It opens `devices.csv` as a sortable, searchable page in the browser — filter by
-name, category, interface or specification, expand any device's full spec bag.
-
-**Do not print the table into the conversation.** Rows in chat wrap, cannot be sorted, and
-cost thousands of tokens to say less than the page says for free.
-
-Then report, in one or two lines: how many devices, how many held for review, and the
-path. Nothing else — no restatement of what you just did, no walkthrough of the pipeline,
-no summary of the summary. If something went wrong or a rule was guessed, say that
-instead; it is the only thing worth spending words on.
-
-`device_table` returns rows as data if you need to reason over them. `device_specs` gives
-one device's specifications. `export_table(domain, category=...)` writes a pivoted
-per-category view — a different shape on purpose, so label it as such.
-
-## Reading the output honestly
-
-- `devices.csv` — **the deliverable.** One row per device: core columns plus a `specs`
-  JSON bag. Devices only; no scrape metadata. Its columns are fixed and do not vary
-  between vendors or runs — only the contents of the `specs` bag do.
-- `specs_eav.csv` — the lossless master, one row per (device, attribute), every value with
-  its raw source text.
-- `review_queue.csv` — held for judgment, never deleted.
-- `extracted.jsonl` — everything, including provenance and merge reasons.
-
-Every spec keeps its `raw` string. A low structured-parse rate means values are written as
-prose, **not** that extraction failed — QInstruments parses at 9% and the data is complete.
-Report it that way.
-
-## When a vendor misbehaves
-
-Check `NOTES.md` in the repo before concluding the tool is broken — it lists the
-site quirks already handled and the ones still open. If you hit a new one, say so
-explicitly in your summary so it can be added rather than re-discovered.
-
-## What to tell the user
-
-**Be brief.** The page is the output; your message is not a report about it.
-
-Say: device count, review-queue count, the path, and the measured cost from `cost_report`
-with the note that it excludes your own context. Then anything genuinely unresolved —
-which recipe fields you guessed rather than confirmed, a vendor quirk worth recording in
-`NOTES.md`, a queue that looks like a parsing bug.
-
-Do not restate the steps you ran, do not summarise the table you just opened, and do not
-list what each artifact contains. Every one of those costs tokens to tell the person
-something they can see.
+| tool | use |
+|---|---|
+| `cost_report(domain)` | measured usage for a vendor, all runs to date |
+| `device_table(domain)` / `device_specs(domain, name)` | answer questions about specific devices |
+| `export_table(domain, category)` | per-category wide table |
+| `run_status(domain)` | what has been done for a vendor |
+| `site_overview`, `put_recipe`, `scan_site`, `extract_devices` | manual control of single stages, for debugging a vendor |
+| `storage_paths()` | where runs, caches and recipes live |

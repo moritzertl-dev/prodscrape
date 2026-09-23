@@ -188,6 +188,8 @@ def classify_by_signals(
     family_depth: int | None = None,
     slug_suffix: str | None = None,
     threshold: float = 0.6,
+    prior: float = 0.0,
+    prior_reason: str = "",
 ) -> Verdict:
     """Score a page from structural evidence alone.
 
@@ -197,6 +199,11 @@ def classify_by_signals(
     score = 0.0
     reasons: list[str] = []
 
+    # How the page was reached is evidence too: a page the scope step named as an
+    # instrument from the vendor's own menu starts ahead of a link found on a hub.
+    if prior:
+        score += prior
+        reasons.append(prior_reason or f"prior {prior:+.2f}")
     if sig.has_spec_heading:
         score += 0.45
         reasons.append("has a technical-data heading")
@@ -236,9 +243,20 @@ def classify_by_signals(
     # qinstruments.com (BioShake Q2, Q1 3.0 mm, D30-T) — thin pages whose only signal was
     # URL depth. Escalating them costs a few tokens; dropping them costs recall no later
     # stage can recover.
+    #
+    # Negative evidence alone never outweighs positive evidence either: Formulatrix's
+    # Mantis, Tempest and NT8 pages carry a "Publications" section, and treating that
+    # as decisive dropped nine real instruments whose pages also listed 20 order codes.
+    # Mixed evidence is exactly what the judgment tier is for.
+    positive = any((
+        sig.has_spec_heading, sig.has_order_heading, sig.order_numbers,
+        sig.has_jsonld_product, prior > 0,
+    ))
     if score >= threshold:
         label = "instrument"
-    elif negative or score == 0.0:
+    elif score == 0.0 and not positive:
+        label = "other"
+    elif negative and not positive:
         label = "other"
     else:
         label = "unknown"

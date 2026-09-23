@@ -207,6 +207,33 @@ def crawl_site(
     return found, errors
 
 
+# Sitemap *file names* say what they hold. Read product sitemaps first and e-commerce,
+# media and community sitemaps last, so a URL budget is spent on the catalogue.
+# agilent.com lists a 49,989-URL e-shop sitemap (pim_commerce01.xml) before
+# products0.xml; read in declared order, the budget ran out before the products.
+_SITEMAP_FIRST = re.compile(r"product|produkt|instrument|equipment|catalog|page", re.I)
+_SITEMAP_LAST = re.compile(
+    r"commerce|store|shop|sku|pim|video|multimedia|image|media|news|press|blog|post|"
+    r"event|webinar|career|job|promotion|community|forum|support|training|author|tag|"
+    r"categor(?:y|ies)_?tag|attachment",
+    re.I,
+)
+
+
+def sitemap_priority(url: str, base_netloc: str) -> int:
+    """Lower is read first. Sitemaps on other hosts (a community forum) go last."""
+    parsed = urlparse(url)
+    name = parsed.path.rsplit("/", 1)[-1] + "?" + parsed.query
+    score = 1
+    if _SITEMAP_FIRST.search(name) and not _SITEMAP_LAST.search(name):
+        score = 0
+    elif _SITEMAP_LAST.search(name):
+        score = 2
+    if base_netloc and parsed.netloc and parsed.netloc != base_netloc:
+        score += 3
+    return score
+
+
 def base_host_note(domain: str, status: int, used: str) -> str:
     return f"{domain} answered {status} on the bare host; using {used} instead"
 
@@ -297,7 +324,9 @@ def discover_site(
                 break
 
     seen_sitemaps: set[str] = set()
+    base_netloc = urlparse(base).netloc
     while queue and len(seen_sitemaps) < max_sitemaps:
+        queue.sort(key=lambda u: sitemap_priority(u, base_netloc))   # stable
         sm_url = queue.pop(0)
         if sm_url in seen_sitemaps:
             continue

@@ -18,6 +18,7 @@ assumes only that a vendor publishes product pages with specification tables.
 | `devices.html` | a sortable, searchable view of the same data, opened in your browser |
 | `specs_eav.csv` | the lossless master: one row per (device, attribute), every value with its raw source text |
 | `review_queue.csv` | rows that need a human or agent verdict, never silently dropped |
+| `excluded.csv` | devices judged unusable in an automated lab (manual tools, passive parts), with the reason |
 | `extracted.jsonl` | everything, including provenance and merge reasoning |
 
 ## Install
@@ -34,60 +35,79 @@ including the config block and troubleshooting: [`SETUP.md`](SETUP.md).
 From a checkout:
 
 ```bash
-uv sync && uv run pytest -q     # 131 tests, fully offline
+uv sync && uv run pytest -q     # 173 tests, fully offline
+uv run prodscrape run <domain> --manufacturer "Name"
 uv run prodscrape tree <domain>
 ```
 
 ## How it works
 
-Five stages. The first four are deterministic and free; only the last costs anything.
+One call — `catalogue_vendor(domain)` over MCP, or `prodscrape run <domain>` — runs every
+stage and returns a report whose cost figures are measured, not estimated.
 
-**Discover.** `robots.txt`, then the declared sitemaps, then a probe of the usual paths,
-then a bounded breadth-first crawl if none of that works. Real sites fail in every way
-imaginable — a sitemap declared but returning 500, a sitemap that returns HTTP 200 with an
-error message in the body, a site that only answers on `www`, a catalogue so large that
-walking it never terminates — so each of those is detected and reported rather than
-silently producing an empty result.
+**Discover.** `robots.txt`, declared sitemaps (product sitemaps first, e-shop and media
+sitemaps last), probes of the usual paths, a bounded crawl when none of that works. When
+a vendor blocks automated access outright (Akamai, Cloudflare challenges), the newest
+successful public Internet Archive capture of each page is used instead, and every such
+record and the final report say so. Bot protection is never circumvented.
 
-**Shortlist.** The agent sees a path-prefix tree, never a raw URL list. Candidates are
-**leaf pages — those with no children, at any depth**, which is the structural difference
-between a product page and a category page. A fixed path depth is not used, because
-catalogues nest products at several levels.
+**Scope — where do the instruments live?** Read from the vendor's own navigation menu
+with its hierarchy (`Products > Microplate readers > Spark®`), sibling hosts
+(`lifesciences.tecan.com`) and off-domain product sites (Brooks → PreciseFlex), plus a
+count-summarised URL tree. One model call turns that ~3-6k-token digest into product
+pages, category hubs and catalogue branches. Without a model, a keyword heuristic
+decides and the report says so. The decision is saved in the recipe and replayed.
 
-**Classify.** Structural signals decide the clear-cut majority for free: specification
-headings in ten languages, order-code patterns, datasheet links, table shape. Only the
-ambiguous minority reaches the agent, as a ~200-token digest rather than a page.
+**Focused crawl.** Category pages are followed to the products they list. Links are
+**triaged by the model before any fetch** — ~15 tokens per link instead of a page fetch
+and a digest — and large sitemap branches are triaged as branches first. Editorial
+paths, tracking parameters, template junk and redirected duplicates are removed
+deterministically.
 
-**Extract.** Specification tables are located by the heading above them and validated
-before use — a wrong table produces confident, plausible nonsense, so no table is
-preferred to the wrong one. Table orientation is detected, not assumed. Every value keeps
-its raw source string alongside the parsed form.
+**Classify.** Structural signals decide the clear-cut majority for free; the ambiguous
+rest is judged from ~250-token digests, batched.
 
-**Decide what is a device.** One row per device. Listings collapse only when *every*
-differing attribute is non-functional — mains voltage, fuse rating, article number,
-bundled software. A functional hardware difference always keeps them apart. Merges record
-what was merged and why, so a wrong one is visible rather than buried.
+**Extract.** Spec tables (orientation detected, wrong tables rejected), `<dl>` lists,
+specs written as `Label: value` text under a spec heading or accordion, several products
+presented as sections of one page, and datasheet PDFs for thin pages. Every value keeps
+its raw text and, if it did not come from the page, its source.
+
+**Decide what is a device.** One row per device: non-functional variants merge, the same
+device on two pages merges, a generic shared title never does.
+
+## Where reasoning is used — and where it is not
+
+| decision | how | why |
+|---|---|---|
+| which part of the site is the catalogue | model, once per vendor, cached in the recipe | semantic; keyword rules were right on 1 of 6 new vendors |
+| which harvested links / sitemap branches are worth fetching | model, batched, cached | a link text says "citation" or "Spark®" at ~15 tokens; a fetch costs seconds |
+| what an ambiguous page is | model over a compact digest | instrument vs accessory vs application is judgment |
+| is a spec-less record a device | model over a one-line row | same |
+| fetching, parsing tables and text, units, device identity, export | deterministic code | a wrong table produces confident nonsense; code is auditable and free |
+
+Judgments come from the first available backend: the Anthropic API (credentials in the
+environment), else the local `claude` CLI (your Claude login, no tools, ~400 tokens of
+overhead per call), else the driving agent through `pending_*` / `record_*` tools. All
+three write the same verdict store, and every call lands in `runs/<domain>/ledger.jsonl`
+with its measured tokens and cost. A per-run budget (`--budget`, default $1) is a hard
+stop.
 
 ## Two principles it is built on
 
-**Python never guesses; the agent never parses HTML.** Deterministic code owns fetching,
-caching, table parsing, device identity and export. The agent supplies judgment — is this
-page a product, is this row a device — and nothing else. No tool ever returns a page.
+**Python never guesses; the model never parses HTML.** Deterministic code owns
+fetching, parsing, identity and export. The model sees menus, link lists and digests —
+never a page.
 
-**Judgments are artifacts.** Every verdict the agent gives is written to disk and replayed
-on later runs, so a question is never asked twice and a finished run replays with no model
-involvement at all.
+**Judgments are artifacts.** Scope decisions, triage decisions and verdicts are stored
+and replayed, so a question is never asked twice and a re-run is free.
 
 ## Cost
 
-Only the escalated minority reaches the model. For a typical vendor of ~60 product pages
-that is a few thousand tokens — roughly **400x cheaper** than sending the pages
-themselves, which is the entire reason for the digest architecture.
-
-`estimate_cost` reports the expected spend before a run and `cost_report` the measured
-spend after. Both count only what the pipeline hands to the model; the agent's own
-conversation context is billed too and is not visible from inside the tool, so treat them
-as a floor rather than the whole bill.
+Measured on the six second-generation vendors with `claude-opus-5`: roughly
+**$0.15-0.35 per vendor** for small and mid-size catalogues, up to the budget cap for
+very large ones (Agilent). `cost_report(domain)` returns the ledger; `estimate_cost`
+quotes the median and range of previous vendors' measured spend, or says there is no
+basis yet.
 
 ## Per-vendor recipes
 
@@ -102,14 +122,13 @@ never seen.
 
 ## Honest limits
 
-- **Bot-protected sites cannot be scraped.** Some vendors return 403 to anything that
-  isn't a real browser session. The tool retries once identifying as a browser, still
-  inside `robots.txt`, then reports the site as unscrapeable rather than pretending it is
-  empty.
+- **Bot-protected sites are read from the Internet Archive.** Some vendors return 403
+  to anything that isn't a real browser session. The tool never circumvents that; it
+  uses public archive captures (possibly weeks old) and says so in the report.
 - **No JavaScript rendering.** Static HTML only. Pages that build their content in the
   browser come back empty, and the tool says so.
-- **No PDF datasheet extraction.** Where a vendor publishes a thin page and a detailed
-  PDF, only the page is read.
+- **PDF extraction is conservative.** Ruled tables and `Label: value` lines are read;
+  free-layout brochures and form-gated downloads are not.
 - **Prose specifications stay as text.** A value written as a sentence is kept verbatim
   rather than half-parsed into a number. A low structured-parse rate means the vendor
   writes prose, not that extraction failed — the data is all there.

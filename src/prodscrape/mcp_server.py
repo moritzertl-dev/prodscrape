@@ -4,28 +4,34 @@ Design rules, all of them load-bearing:
 
 1. **No tool ever returns a page.** Tools return summaries, compact digests and file
    paths. The largest thing that crosses this boundary is a ~300-token page digest.
-2. **The agent is the judgment layer.** There is no LLM client in this codebase. Stage-2
-   tier B and the Stage-3.6 review are not "call a model" — they are `pending_*` tools
-   that hand Claude the ambiguous minority, and `record_*` tools that write its verdicts
-   to disk.
+2. **Judgment has two paths, one shape.** With a reasoning backend (Anthropic API key,
+   or the `claude` CLI on the machine) `catalogue_vendor` asks the model itself, inside
+   the run, and meters every call. Without one, the same questions reach the driving
+   agent through `pending_*` tools and its answers come back through `record_*` tools.
+   Verdicts land in the same store either way.
 3. **Judgments persist.** Every verdict is stored and replayed, so a re-run never re-asks
    a question and costs nothing.
+4. **Every response is metered.** Each tool result's size is appended to the vendor's
+   ledger, so the cost report counts what the agent was actually handed instead of
+   relying on the agent to remember — or estimate — it.
 
 Run with:  ``uv run python -m prodscrape.mcp_server``
 """
 
 from __future__ import annotations
 
+import functools
+import inspect
 import json
+import time
 from pathlib import Path
 
 # mcp 2.x renamed FastMCP to MCPServer; the decorator API is unchanged.
 from mcp.server.mcpserver import MCPServer
 
-from .costs import (
-    DEFAULT_MODEL, TOKENS_PER_VERDICT, compare_naive, estimate_scrape, price,
-)
-from .digest import digest_size_estimate, page_digest
+from .costs import calibrated_estimate, estimate_tokens
+from .digest import digest_for_row
+from .llm import Ledger
 from .discover import discover_site
 from .fetch import Cache, Fetcher
 from .inventory import prefix_tree, render_tree
@@ -37,8 +43,38 @@ from .verdicts import VerdictStore
 mcp = MCPServer("prodscrape")
 
 
+def _clean(domain: str) -> str:
+    return domain.replace("https://", "").replace("http://", "").strip("/")
+
+
+def metered(fn):
+    """Register a tool and record the size of everything it returns to the agent.
+
+    The agent's own reasoning is invisible from here, but every byte a tool hands it is
+    not — so it is counted at the source rather than reconstructed afterwards.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        try:
+            bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+            domain = bound.arguments.get("domain")
+            if domain:
+                Ledger(runs_dir() / _clean(domain)).append({
+                    "kind": "tool_output",
+                    "tool": fn.__name__,
+                    "tokens": estimate_tokens(json.dumps(result, ensure_ascii=False,
+                                                         default=str)),
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+        except Exception:
+            pass                         # metering must never break a tool
+        return result
+    return mcp.tool()(wrapper)
+
+
 def _run_dir(domain: str) -> Path:
-    return runs_dir() / domain.replace("https://", "").replace("http://", "").strip("/")
+    return runs_dir() / _clean(domain)
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -47,9 +83,53 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
 
+# --------------------------------------------------------------------------- one call
+
+@metered
+def catalogue_vendor(
+    domain: str,
+    manufacturer: str | None = None,
+    llm: str | None = None,
+    budget_usd: float = 1.0,
+    limit: int = 0,
+) -> dict:
+    """START HERE. Catalogue one vendor end to end and get the report to show the user.
+
+    Runs discovery, scope, focused crawl, classification, extraction, datasheet PDFs and
+    the review queue. When a reasoning backend is available the judgment steps run
+    inside the call and it finishes on its own; otherwise it stops with `next_step`
+    naming exactly which tool to call.
+
+    Relay `report_to_user` verbatim — it carries the measured cost. Do not add your own
+    estimate. The first run of a vendor fetches pages politely (~1 s each) and can take
+    several minutes; everything is cached, so calling it again resumes quickly.
+
+    llm: "auto" (default) | "anthropic" | "claude-cli" | "agent" (never call a model).
+    budget_usd: hard cap on model spend for this call.
+    """
+    from .orchestrate import catalogue
+
+    result = catalogue(
+        _clean(domain), manufacturer=manufacturer, llm=llm, budget_usd=budget_usd,
+        limit=limit or None,
+    )
+    scan = result["scan"]
+    return {
+        "report_to_user": result["report_to_user"],
+        "next_step": result["next_step"],
+        "devices": result["devices"],
+        "held_for_review": result["held_for_review"],
+        "pages_awaiting_judgment": result["pages_awaiting_judgment"],
+        "reasoning_backend": scan["reasoning_backend"],
+        "scope_decided_by": scan["scope"]["decided_by"],
+        "devices_csv": result["artifacts"]["devices_csv"],
+        "report_path": result["artifacts"]["report"],
+    }
+
+
 # --------------------------------------------------------------------------- stage 0-1
 
-@mcp.tool()
+@metered
 def site_overview(domain: str, delay: float = 1.0) -> dict:
     """Profile a vendor site: platform, sitemap health, URL prefix tree, suggested rules.
 
@@ -79,14 +159,14 @@ def site_overview(domain: str, delay: float = 1.0) -> dict:
     }
 
 
-@mcp.tool()
+@metered
 def get_recipe(domain: str) -> dict:
     """Read the saved per-vendor recipe, or report that none exists."""
     recipe = load_recipe(domain)
     return recipe.to_dict() if recipe else {"domain": domain, "exists": False}
 
 
-@mcp.tool()
+@metered
 def put_recipe(
     domain: str,
     include: list[str],
@@ -133,7 +213,7 @@ def put_recipe(
 
 # --------------------------------------------------------------------------- stage 2
 
-@mcp.tool()
+@metered
 def scan_site(domain: str, limit: int = 0, delay: float = 1.0) -> dict:
     """Shortlist candidate product pages and classify them deterministically.
 
@@ -143,7 +223,7 @@ def scan_site(domain: str, limit: int = 0, delay: float = 1.0) -> dict:
     return run_scan(domain, limit=None if limit == 0 else limit, delay=delay)
 
 
-@mcp.tool()
+@metered
 def pending_classifications(domain: str, limit: int = 20) -> dict:
     """Pages the structural signals could not decide — your tier-B queue.
 
@@ -153,7 +233,9 @@ def pending_classifications(domain: str, limit: int = 20) -> dict:
     Labels: instrument, accessory, consumable, software, service, category_page, other.
     Only `instrument` proceeds to extraction.
     """
-    domain = domain.replace("https://", "").replace("http://", "").strip("/")
+    from .judge import CLASSIFY_SYSTEM
+
+    domain = _clean(domain)
     out = _run_dir(domain)
     cache = Cache(cache_dir() / domain)
     store = VerdictStore.load(out)
@@ -162,35 +244,22 @@ def pending_classifications(domain: str, limit: int = 20) -> dict:
         r for r in _read_jsonl(out / "classified.jsonl")
         if r["label"] == "unknown" and store.classification_for(r["url"]) is None
     ]
-    digests, tokens = [], 0
+    digests = []
     for row in rows[:limit]:
         hit = cache.get(row["url"])
-        if hit is None:
-            continue
-        digest = page_digest(row["url"], hit[1])
-        digest["signal_confidence"] = row["confidence"]
-        digest["signal_reason"] = row["reason"]
-        tokens += digest_size_estimate(digest)
-        digests.append(digest)
-
-    # Tally what actually crossed the boundary, so the end-of-run figure is measured
-    # rather than re-estimated.
-    if digests:
-        store.add_usage(tokens, output_tokens=len(digests) * TOKENS_PER_VERDICT)
-        store.save()
-
-    est = price(DEFAULT_MODEL, tokens, len(digests) * TOKENS_PER_VERDICT)
+        if hit is not None:
+            digests.append(digest_for_row(row, hit[1]))
     return {
         "domain": domain,
         "pending_total": len(rows),
         "returned": len(digests),
-        "approx_tokens": tokens,
-        "cost_of_this_batch": est.as_dict(),
+        "instructions": CLASSIFY_SYSTEM,
         "digests": digests,
+        "next": "record_classifications with {url, label, reason} per digest",
     }
 
 
-@mcp.tool()
+@metered
 def record_classifications(domain: str, verdicts: list[dict]) -> dict:
     """Persist tier-B labels. Each verdict: {url, label, reason}.
 
@@ -217,7 +286,7 @@ def record_classifications(domain: str, verdicts: list[dict]) -> dict:
 
 # --------------------------------------------------------------------------- stage 3-4
 
-@mcp.tool()
+@metered
 def extract_devices(domain: str, manufacturer: str | None = None) -> dict:
     """Build the device table from a completed scan. Fully offline.
 
@@ -228,7 +297,7 @@ def extract_devices(domain: str, manufacturer: str | None = None) -> dict:
     return run_extract(domain, manufacturer=manufacturer)
 
 
-@mcp.tool()
+@metered
 def pending_reviews(domain: str, limit: int = 30) -> dict:
     """Records with no specification table — usually series or overview pages.
 
@@ -255,7 +324,7 @@ def pending_reviews(domain: str, limit: int = 30) -> dict:
     return {"domain": domain, "pending_total": len(rows), "rows": rows[:limit]}
 
 
-@mcp.tool()
+@metered
 def record_reviews(domain: str, verdicts: list[dict]) -> dict:
     """Persist review verdicts. Each: {product_id, verdict, reason}.
 
@@ -280,7 +349,7 @@ def record_reviews(domain: str, verdicts: list[dict]) -> dict:
     }
 
 
-@mcp.tool()
+@metered
 def device_table(
     domain: str,
     limit: int = 25,
@@ -335,7 +404,7 @@ def device_table(
     }
 
 
-@mcp.tool()
+@metered
 def open_device_table(domain: str, open_browser: bool = True) -> dict:
     """Open `devices.csv` as a browsable, sortable, searchable page. **The deliverable.**
 
@@ -372,7 +441,7 @@ def open_device_table(domain: str, open_browser: bool = True) -> dict:
     }
 
 
-@mcp.tool()
+@metered
 def device_specs(domain: str, name: str) -> dict:
     """Every specification of one device, with raw source text preserved."""
     for row in _read_jsonl(_run_dir(domain) / "extracted.jsonl"):
@@ -388,7 +457,7 @@ def device_specs(domain: str, name: str) -> dict:
     return {"error": f"no device named {name!r}", "hint": "call device_table first"}
 
 
-@mcp.tool()
+@metered
 def export_table(domain: str, category: str | None = None) -> dict:
     """Paths to the exported files, plus a category-pivoted view when asked.
 
@@ -428,58 +497,52 @@ def export_table(domain: str, category: str | None = None) -> dict:
     return result
 
 
-@mcp.tool()
-def estimate_cost(domain: str, model: str = DEFAULT_MODEL) -> dict:
-    """What this vendor is expected to cost in model calls, before you start.
+@metered
+def estimate_cost(domain: str) -> dict:
+    """What a vendor is likely to cost in model calls, from measured history.
 
-    Call this at the beginning of a run and report the figure. It prices only the
-    escalated minority — the deterministic tiers are free — and excludes the agent's own
-    conversation context, which is billed separately and is not visible from here.
+    Not a formula: the median and range of what previous vendors in this installation
+    actually spent, read from their ledgers. With no history it says so rather than
+    guessing. After the run, `cost_report` gives the measured figure for this vendor.
     """
-    out = _run_dir(domain)
-    candidates = len(_read_jsonl(out / "candidates.jsonl"))
-    extracted = _read_jsonl(out / "extracted.jsonl")
-    review_rows = sum(1 for r in extracted if not r["specs"])
-
-    if not candidates:
-        return {
-            "domain": domain,
-            "note": "no scan yet — run site_overview then scan_site first",
-        }
-
-    est = estimate_scrape(candidates, model=model, review_rows=review_rows)
-    naive = compare_naive(candidates, model=model)
+    est = calibrated_estimate(runs_dir(), exclude=_clean(domain))
+    if est is None:
+        return {"domain": domain, "estimate": None,
+                "note": "no previous runs with model usage — no basis for an estimate yet"}
     return {
         "domain": domain,
-        "candidates": candidates,
-        "estimate": est.as_dict(),
-        "if_whole_pages_were_sent": naive.as_dict(),
-        "saving_factor": round(naive.total_cost / max(est.total_cost, 1e-9)),
-        "summary": est.summary(),
+        "estimate": est,
+        "summary": (f"Previous vendors cost ${est['median_usd']:.2f} median "
+                    f"(range ${est['min_usd']:.2f}-${est['max_usd']:.2f}) in model calls; "
+                    f"basis: {est['basis']}."),
     }
 
 
-@mcp.tool()
-def cost_report(domain: str, model: str = DEFAULT_MODEL) -> dict:
-    """What this vendor actually cost — tokens measured as they were handed over.
+@metered
+def cost_report(domain: str) -> dict:
+    """What this vendor actually cost — every model call and tool payload, measured.
 
-    Call this at the end of a run and report the figure alongside the estimate. This is a
-    floor, not the full bill: it counts every digest and queue the pipeline passed to you,
-    but not your own conversation context.
+    Reads the vendor's ledger: model calls made inside the pipeline (exact usage from
+    the API or CLI) and the size of every tool result handed to the driving agent. The
+    agent's own reasoning is the only part not counted, and the summary says so.
     """
-    store = VerdictStore.load(_run_dir(domain))
-    usage = store.usage
-    actual = price(model, usage["input_tokens"], usage["output_tokens"])
+    totals = Ledger(_run_dir(domain)).totals()
+    parts = []
+    if totals["model_calls"]:
+        parts.append(
+            f"{totals['model_calls']} model calls, {totals['input_tokens']:,} input / "
+            f"{totals['output_tokens']:,} output tokens, ${totals['cost_usd']:.3f} "
+            f"({', '.join(totals['models'])} via {', '.join(totals['backends'])})"
+        )
+    else:
+        parts.append("no model calls inside the pipeline")
+    if totals["tool_payload_tokens"]:
+        parts.append(f"~{totals['tool_payload_tokens']:,} tokens of tool results over "
+                     f"{totals['tool_calls']} tool calls")
     return {
         "domain": domain,
-        "model_calls_made": usage["calls"],
-        "verdicts_recorded": store.counts,
-        "actual": actual.as_dict(),
-        "summary": (
-            f"{actual.total_tokens:,} tokens handed to the model across "
-            f"{usage['calls']} batches = ${actual.total_cost:.4f} at {model} rates. "
-            "Excludes your own conversation context, which is billed separately."
-        ),
+        "totals": totals,
+        "summary": "; ".join(parts) + ". Excludes the agent's own conversation context.",
     }
 
 
@@ -507,7 +570,7 @@ def storage_paths() -> dict:
     return describe()
 
 
-@mcp.tool()
+@metered
 def run_status(domain: str) -> dict:
     """What has been done for this vendor and what is outstanding."""
     out = _run_dir(domain)

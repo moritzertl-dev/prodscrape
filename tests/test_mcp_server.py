@@ -21,7 +21,7 @@ def test_all_tools_register():
         "site_overview", "get_recipe", "put_recipe", "scan_site",
         "pending_classifications", "record_classifications", "extract_devices",
         "pending_reviews", "record_reviews", "device_table", "device_specs",
-        "export_table", "run_status",
+        "export_table", "run_status", "catalogue_vendor", "cost_report", "estimate_cost",
     } <= names
 
 
@@ -58,7 +58,7 @@ def test_verdict_store_round_trips(tmp_path):
     assert reloaded.classification_for("https://x.test/a")["label"] == "consumable"
     assert reloaded.classification_for("https://x.test/a")["decided_by"] == "model"
     assert reloaded.review_for("vendor__thing")["verdict"] == "not-a-device"
-    assert reloaded.counts == {"classifications": 1, "reviews": 1}
+    assert reloaded.counts == {"classifications": 1, "reviews": 1, "relevance": 0}
 
 
 def test_verdict_store_rejects_unknown_labels(tmp_path):
@@ -118,7 +118,8 @@ def test_claude_code_skill_copy_is_in_sync():
 def test_get_procedure_returns_the_packaged_skill():
     result = mcp_server.get_procedure()
     assert "procedure" in result
-    assert "Never ask for a page" in result["procedure"]
+    assert "catalogue_vendor" in result["procedure"]
+    assert "verbatim" in result["procedure"]
 
 
 def test_device_table_returns_the_devices_csv_columns():

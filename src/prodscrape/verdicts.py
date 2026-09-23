@@ -15,6 +15,7 @@ from pathlib import Path
 
 CLASSIFICATION = "classification"
 REVIEW = "review"
+RELEVANCE = "relevance"
 USAGE = "usage"
 
 VALID_LABELS = {
@@ -22,6 +23,7 @@ VALID_LABELS = {
     "category_page", "other",
 }
 VALID_VERDICTS = {"device", "not-a-device"}
+VALID_RELEVANCE = {"yes", "maybe", "no"}
 
 
 @dataclass
@@ -40,6 +42,7 @@ class VerdictStore:
             data = {CLASSIFICATION: {}, REVIEW: {}}
         data.setdefault(CLASSIFICATION, {})
         data.setdefault(REVIEW, {})
+        data.setdefault(RELEVANCE, {})
         data.setdefault(USAGE, {"input_tokens": 0, "output_tokens": 0, "calls": 0})
         return cls(path=path, data=data)
 
@@ -77,6 +80,27 @@ class VerdictStore:
             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
+    # -- automation relevance --------------------------------------------------
+    def set_relevance(self, product_id: str, verdict: str, reason: str,
+                      decided_by: str = "model") -> None:
+        """Could this device be part of an automated laboratory? yes / maybe / no.
+
+        Deliberately lenient: only "no" removes a row from the table, and "maybe" stays.
+        A missed device costs more than an extra row someone can skip.
+        """
+        if verdict not in VALID_RELEVANCE:
+            raise ValueError(f"unknown relevance {verdict!r}; expected one of "
+                             f"{sorted(VALID_RELEVANCE)}")
+        self.data[RELEVANCE][product_id] = {
+            "verdict": verdict,
+            "reason": reason,
+            "decided_by": decided_by,
+            "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+    def relevance_for(self, product_id: str) -> dict | None:
+        return self.data[RELEVANCE].get(product_id)
+
     def review_for(self, product_id: str) -> dict | None:
         return self.data[REVIEW].get(product_id)
 
@@ -100,4 +124,5 @@ class VerdictStore:
         return {
             "classifications": len(self.data[CLASSIFICATION]),
             "reviews": len(self.data[REVIEW]),
+            "relevance": len(self.data[RELEVANCE]),
         }

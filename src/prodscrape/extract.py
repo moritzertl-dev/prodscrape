@@ -71,7 +71,8 @@ INTERFACE_PATTERNS = {
     "Digital I/O": r"\bdigital\s+(?:inputs?|outputs?|i/o|interface)\b",
 }
 
-_PDF_RE = re.compile(r"\.pdf(\?|$)", re.I)
+# A PDF link, with or without the extension (Tecan: /doc/spark-datasheet-pdf-397823).
+_PDF_RE = re.compile(r"\.pdf(\?|$)|[-_]pdf[-_]\d+/?(\?|$)", re.I)
 
 
 @dataclass
@@ -242,6 +243,11 @@ def find_spec_table(
     scored: list[tuple[int, int, str, list[list[str]]]] = []
     for heading, grid in tables_with_headings(html):
         heading_match = any(term in heading.lower() for term in spec_terms)
+        # A table under "Resources" or "Downloads" is not a spec table whatever its
+        # shape: Formulatrix's NT8 page produced two phantom devices, "Wet Dispense"
+        # and "Dry Dispense", from its resources grid.
+        if not heading_match and NON_SPEC_HEADING_RE.search(heading):
+            continue
 
         # Size bars are relaxed under a spec heading and strict without one. A page
         # describing a single device has a two-row spec table (header + one row), and
@@ -270,6 +276,343 @@ def find_spec_table(
     heading_match, _, heading, grid = max(scored, key=lambda s: (s[0], s[1]))
     label = "heading" if heading_match else "validated-table"
     return grid, f"{label}:{heading or 'no heading'}"
+
+
+NON_SPEC_HEADING_RE = re.compile(
+    r"\b(resources?|downloads?|literature|documents?|brochures?|publications?|"
+    r"citations?|references|webinars?|videos?|application notes?|accessor(?:y|ies)|"
+    r"consumables?|ordering|related|you may also|news|events?|faqs?|support)\b",
+    re.I,
+)
+
+# --------------------------------------------------------------------------- sections
+
+SECTION_TEXT_TAGS = ("p", "li", "dd", "dt", "td")
+_LABEL_VALUE_RE = re.compile(r"^\s*([^:：]{2,60}?)\s*[:：]\s*(.+?)\s*$")
+MAX_SECTION_PAIRS = 120
+
+
+_TOGGLE_RE = re.compile(r"accordion|toggle|collaps|tab(?:s|-title|-label|-button|__)|"
+                        r"elementor-tab|panel-title|expand", re.I)
+PSEUDO_SECTION_LEVEL = 2
+PSEUDO_GROUP_LEVEL = 7
+
+
+def _heading_level(node) -> int | None:
+    """Heading level, including the two things vendors use *instead* of headings.
+
+    * Accordion and tab labels start sections: Formulatrix's "Specifications and
+      Requirements" is a ``<span>`` inside a ``role="button"`` accordion toggle.
+    * A paragraph that is nothing but bold text is a sub-heading
+      (``<p><strong>Electrical Specifications</strong></p>``).
+    """
+    if node.tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+        return int(node.tag[1])
+    if node.tag in ("button", "a", "div", "span", "li", "summary", "dt"):
+        role = (node.attributes.get("role") or "").lower()
+        ident = f"{node.attributes.get('class') or ''} {node.attributes.get('id') or ''}"
+        if node.tag == "summary" or role in ("button", "tab") or _TOGGLE_RE.search(ident):
+            text = node.text(separator=" ", strip=True)
+            if text and len(text) <= 70 and node.css_first("p, ul, table, div div") is None:
+                return PSEUDO_SECTION_LEVEL
+    if node.tag == "p":
+        bold = node.css_first("strong, b")
+        text = " ".join(node.text(separator=" ", strip=True).split())
+        if bold is not None and text and len(text) <= 70 and \
+                " ".join(bold.text(separator=" ", strip=True).split()) == text:
+            return PSEUDO_GROUP_LEVEL
+    return None
+
+
+def spec_section_pairs(
+    html: str, recipe: Recipe | None = None, *, whole: bool = False
+) -> tuple[dict[str, str], str]:
+    """Specifications written as text under a spec heading, not as a table.
+
+    A large share of vendors do this — Formulatrix's Mantis page lays out
+    "Specifications and Requirements" as sub-headed blocks of ``Label: value`` lines
+    ("Weight: 5.2 kg") and short lists ("4-40 °C ambient temperature"). Tables-only
+    extraction returned nothing for every such page.
+
+    Reading rules, all structural:
+
+    * the section starts at a heading matching the spec vocabulary and ends at the next
+      heading of the same or a higher level that does not;
+    * a ``Label: value`` line is one spec; a repeated label is qualified by its
+      sub-heading ("Height (Mantis with LC3 Dimensions)") instead of overwriting;
+    * free lines under a sub-heading become one spec named after the sub-heading, joined
+      with "; " — prose stays prose, but nothing is dropped.
+
+    Returns ``(pairs, heading)``; empty when there is no such section.
+    """
+    spec_terms = tuple(SPEC_HEADINGS) + tuple(
+        h.lower() for h in (recipe.spec_headings if recipe else ())
+    )
+    tree = HTMLParser(html)
+    for tag in ("script", "style", "noscript", "nav", "footer"):
+        for node in tree.css(tag):
+            node.decompose()
+
+    best: tuple[dict[str, str], str] = ({}, "")
+    # ``whole``: the HTML is already one product's section (see ``product_sections``),
+    # so reading starts at once and only Label: value lines count — free prose from a
+    # marketing block is not a specification.
+    active_level: int | None = 0 if whole else None
+    section_heading = ""
+    group = ""
+    pairs: dict[str, str] = {}
+    free: dict[str, list[str]] = {}
+    seen_text: set[int] = set()
+    active_pseudo = False
+
+    def close() -> None:
+        nonlocal best
+        merged = dict(pairs)
+        for g, lines in free.items():
+            if lines:
+                key = g or section_heading
+                text = "; ".join(lines)[:400]
+                merged.setdefault(key, text)
+        if len(merged) > len(best[0]):
+            best = (merged, section_heading)
+
+    for node in tree.root.traverse(include_text=False):
+        level = _heading_level(node)
+        if level is not None:
+            text = " ".join(node.text(separator=" ", strip=True).split())
+            if not text:
+                continue
+            is_spec = any(t in text.lower() for t in spec_terms)
+            pseudo = node.tag not in ("h1", "h2", "h3", "h4", "h5", "h6")
+            if active_level is None:
+                if is_spec:
+                    active_level, section_heading, group = level, text, ""
+                    active_pseudo = pseudo
+                    pairs, free = {}, {}
+                continue
+            # A tab strip inside a real "Technical data" section ("Dimensions",
+            # "Electrical") groups specs; it only ends a section a toggle opened.
+            closes = level <= active_level and not is_spec and (
+                not pseudo or active_pseudo
+            )
+            if closes and not whole:
+                close()
+                active_level = None
+                continue
+            group = text
+            continue
+        if active_level is None or node.tag not in SECTION_TEXT_TAGS:
+            continue
+        # Nested text tags (li > p) would be read twice.
+        if any(a.mem_id in seen_text for a in _ancestors(node)):
+            continue
+        seen_text.add(node.mem_id)
+        for line in node.text(separator="\n", strip=True).split("\n"):
+            line = " ".join(line.split())
+            if not line or len(line) > 300:
+                continue
+            m = _LABEL_VALUE_RE.match(line)
+            if m and not m.group(1).lower().startswith(("http", "www")):
+                label, value = m.group(1).strip(), m.group(2).strip()
+                if whole and not _HAS_DIGIT.search(value):
+                    continue            # a marketing "Title: tagline", not a spec
+                if label in pairs and pairs[label] != value:
+                    label = f"{label} ({group})" if group else f"{label} #{len(pairs)}"
+                pairs.setdefault(label, value)
+            elif not whole:
+                free.setdefault(group, []).append(line)
+        if len(pairs) >= MAX_SECTION_PAIRS:
+            break
+    if active_level is not None:
+        close()
+    return best
+
+
+def _ancestors(node):
+    cur = node.parent
+    while cur is not None:
+        yield cur
+        cur = cur.parent
+
+
+# --------------------------------------------------------------------------- sections
+
+_NOT_PRODUCT_ANCHOR = re.compile(
+    r"^(?:(?:back )?to (?:the )?top|top|back|up|home|contact(?: us)?|overview|features?|"
+    r"benefits?|downloads?|videos?|resources?|faqs?|specs?|specifications?|"
+    r"applications?|more|menu|content|main|skip to (?:main )?content|details|versions?|"
+    r"part numbers?|ordering(?: information)?|order info|accessories|documents?|"
+    r"documentation|support|reviews?|description|related products?|literature|"
+    r"request (?:a )?quote.*|contact sales|get a quote|compare|models?)$",
+    re.I,
+)
+
+
+def _looks_like_family_member(name: str, names: list[str]) -> bool:
+    if len(name.split()) > 8 or name.rstrip().endswith("?"):
+        return False                     # FAQ questions are in-page anchors too
+    if _HAS_DIGIT.search(name) and _HAS_LETTER.search(name):
+        return True
+    mine = {t for t in _tokens(name) if len(t) >= 4}
+    return any(mine & {t for t in _tokens(o) if len(t) >= 4} for o in names if o != name)
+
+
+def product_sections(html: str, url: str) -> list[tuple[str, str]]:
+    """``[(name, section_html)]`` for a page that presents several products in-page.
+
+    PreciseFlex's "Recommended Products" page is five robots, each a section opened by
+    an in-page link (``#preciseflex400_labproducts``) with no page of its own. The
+    pattern is structural and common: two or more same-page fragment links whose
+    targets exist, with link texts that are names rather than "Top" or "Downloads".
+
+    The page's HTML is cut at each target's enclosing heading, so everything from one
+    product's heading to the next product's heading is that product's section.
+    """
+    tree = HTMLParser(html)
+    base = url.split("#", 1)[0].rstrip("/")
+    targets: dict[str, str] = {}
+    for a in tree.css("a[href*='#']"):
+        href = (a.attributes.get("href") or "").strip()
+        page, _, frag = href.partition("#")
+        if not frag or (page and urljoin(url, page).split("#")[0].rstrip("/") != base):
+            continue
+        name = clean_label(" ".join(a.text(separator=" ", strip=True).split()))
+        if len(name) < 2 or len(name) > 80 or _NOT_PRODUCT_ANCHOR.match(name):
+            continue
+        targets.setdefault(frag, name)
+    if len(targets) < 2:
+        return []
+    # In-page tabs ("Details", "Part Numbers", "Versions") use the same mechanism as
+    # product sections. Products in one section list look like a family: they share a
+    # name ("PreciseFlex 400", "PreciseFlex c5") or carry model numbers.
+    names = list(targets.values())
+    family = [n for n in names if _looks_like_family_member(n, names)]
+    if len(family) < 2 or len(family) < 0.6 * len(names):
+        return []
+    targets = {f: n for f, n in targets.items() if n in family}
+
+    cuts: list[tuple[int, str]] = []
+    for frag, name in targets.items():
+        pos = html.find(f'id="{frag}"')
+        if pos < 0:
+            pos = html.find(f"id='{frag}'")
+        if pos < 0:
+            continue
+        # Start at the heading that holds the marker, if it sits inside one.
+        head = max(html.rfind("<h", 0, pos), 0)
+        start = head if head and pos - head < 400 else html.rfind("<", 0, pos)
+        cuts.append((start, name))
+    cuts.sort()
+    if len(cuts) < 2:
+        return []
+    end = html.find("<footer")
+    end = end if end > cuts[-1][0] else len(html)
+    out = []
+    for i, (start, name) in enumerate(cuts):
+        stop = cuts[i + 1][0] if i + 1 < len(cuts) else end
+        out.append((name, html[start:stop]))
+    return out
+
+
+def extract_sections(
+    url: str,
+    html: str,
+    sections: list[tuple[str, str]],
+    *,
+    manufacturer: str,
+    recipe: Recipe | None = None,
+    category: str | None = None,
+) -> list[DeviceRecord]:
+    """One device per in-page product section, specs read from that section only."""
+    tree = HTMLParser(html)
+    image = _meta(tree, 'meta[property="og:image"]')
+    category = clean_label(category or category_from_url(url, recipe))
+    records = []
+    for name, chunk in sections:
+        grid, provenance = find_spec_table(chunk, recipe)
+        specs: dict[str, SpecValue] = {}
+        if grid is not None:
+            table = to_spec_table(grid, recipe.spec_table_orientation if recipe else None)
+            if len(table.entities) == 1:
+                specs = _specs_from(next(iter(table.records.values())))
+        if not specs:
+            pairs, _ = spec_section_pairs(chunk, recipe, whole=True)
+            specs, provenance = _specs_from(pairs), "section:in-page"
+        chunk_tree = HTMLParser(chunk)
+        text = " ".join(chunk_tree.text(separator=" ", strip=True).split())
+        first_p = chunk_tree.css_first("p")
+        records.append(DeviceRecord(
+            product_id=product_id(manufacturer, url, name),
+            manufacturer=manufacturer,
+            name=name,
+            url=f"{url.split('#')[0]}",
+            category=category,
+            description=(first_p.text(strip=True) if first_p else text)[:400],
+            image_url=urljoin(url, image) if image else "",
+            datasheet_urls=[urljoin(url, a.attributes.get("href") or "")
+                            for a in chunk_tree.css("a[href]")
+                            if _PDF_RE.search(a.attributes.get("href") or "")][:10],
+            interfaces=sorted(n for n, pat in INTERFACE_PATTERNS.items()
+                              if re.search(pat, text, re.I)),
+            specs=specs,
+            spec_source=f"in-page-section:{provenance}",
+        ))
+    return records
+
+
+# --------------------------------------------------------------------------- names
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in _TOKEN_RE.findall(text.lower()) if len(t) >= 2 and not t.isdigit()}
+
+
+# "10 µl", "1.5 mL", "230 V": a quantity, not a model name.
+_QUANTITY_RE = re.compile(
+    r"^[<>≤≥~±]?\s*\d+(?:[.,]\d+)?\s*(?:[-–]\s*\d+(?:[.,]\d+)?\s*)?"
+    r"(?:[µμu]?[lL]|m[lL]|nl|mm|cm|m|µm|nm|kg|g|mg|V|kV|Hz|kHz|W|kW|A|rpm|x\s*g|°C|%|bar|"
+    r"psi|min|s|h|well|wells|plates?|samples?|tubes?|channels?)\.?$",
+    re.I,
+)
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+_STOPWORDS = {"and", "the", "for", "with", "of", "to", "in", "on", "your", "our", "a",
+              "an", "und", "der", "die", "das", "von", "mit", "for", "by", "at"}
+# Calls to action and generic labels: never a device name.
+_CTA_NAME = re.compile(r"(?i)(?:learn|read|find out|discover|see|view|explore) (?:more|how|now)|"
+                       r"explore|overview|details|"
+                       r"products?|home|click here|more info(?:rmation)?")
+_HAS_DIGIT = re.compile(r"\d")
+
+
+def plausible_device_names(names: list[str], page_name: str, hint: str = "") -> bool:
+    """Whether a table's entity axis names devices at all.
+
+    A comparison table read along the wrong axis names *attributes* as devices
+    ("Lens/Objective Options", "Working Distance"); a sample-size table names numbers
+    ("50", "15", "1.5"). Real variant names share a word with the product
+    ("ROCK IMAGER 1000" on the Rock Imager page) or look like a model code ("B 28",
+    "M Nano+"). Most of the entities must pass.
+    """
+    names = [n for n in names if n.strip()]
+    if not names:
+        return False
+    family = _tokens(page_name) | _tokens(hint)
+    # "qTOWER iris 384" on the "qTOWERiris Series" page: compare against the family
+    # name with its spaces removed as well.
+    glued = re.sub(r"[^a-z0-9]", "", f"{page_name} {hint}".lower())
+    ok = 0
+    for n in names:
+        if re.fullmatch(r"column_\d+", n.strip()):
+            continue                        # a placeholder: the table named no variants
+        toks = _tokens(n)
+        if toks & family or any(len(t) >= 4 and t in glued for t in toks):
+            ok += 1
+        elif (_HAS_LETTER.search(n) and _HAS_DIGIT.search(n) and len(n) <= 100
+              and not _QUANTITY_RE.match(n.strip())):
+            ok += 1                         # a model designation: "AFU 3", "LS-T", "B 28"
+    return ok >= max(1, (len(names) + 1) // 2)
 
 
 # Chrome that surrounds the content on every page. Left in, a "USB-C accessories" entry
@@ -314,6 +657,8 @@ def main_content_text(html: str, *, min_retained: float = 0.3) -> str:
     # of the text is left alone whatever it is called.
     budget = len(full) * 0.4
     for node in tree.css("[class]"):
+        if node.tag in ("html", "body", "main", "article"):
+            continue
         if not CHROME_CLASS_RE.search(node.attributes.get("class") or ""):
             continue
         if len(node.text(separator=" ", strip=True)) > budget:
@@ -376,6 +721,18 @@ def category_from_url(url: str, recipe: Recipe | None) -> str:
 _TRAILING_ORDER_RE = re.compile(r"\s*[A-Z]{0,4}\d[\dA-Za-z]*(?:-[\dA-Za-z]+){2,}\s*$")
 
 
+_DECOR_RE = re.compile(r"\s*[▶►▸›»→➔]+\s*$")
+_MARK_RE = re.compile(r"\s+([®™©])")
+
+
+def clean_label(text: str) -> str:
+    """Menu glyphs and detached trademark signs: "Formulator ®" -> "Formulator®"."""
+    text = _DECOR_RE.sub("", text or "")
+    text = _MARK_RE.sub(r"\1", text)
+    text = re.sub(r"\s+TM\b", "™", text)
+    return " ".join(text.split())
+
+
 def clean_variant_name(raw: str) -> str:
     """Trim a spec-table row label down to a device name.
 
@@ -383,7 +740,7 @@ def clean_variant_name(raw: str) -> str:
     ``"PlasmaQuant MS - high sensitive, robust and reliable ICP-MS Instrument 818-08010-2"``
     becomes ``"PlasmaQuant MS"``.
     """
-    name = re.sub(r"\s+", " ", (raw or "").strip())
+    name = clean_label(raw)
     name = _TRAILING_ORDER_RE.sub("", name)
     # Dashes only. Splitting on ";" / "," / ":" destroyed real distinctions:
     # "CyBio FeliX Basic Unit; Clean Bench" and "...; Clean Bench; with Light" both
@@ -418,16 +775,52 @@ def product_id(manufacturer: str, url: str, name: str) -> str:
     return f"{vendor}__{tail}__{suffix}" if suffix and suffix != tail else f"{vendor}__{tail}"
 
 
+def _specs_from(pairs: dict[str, str]) -> dict[str, SpecValue]:
+    return {
+        attribute_key(attr): parse_spec_value(value)
+        for attr, value in pairs.items()
+        if attr.strip() and value.strip() and attribute_key(attr)
+    }
+
+
 def extract_page(
     url: str,
     html: str,
     *,
     manufacturer: str,
     recipe: Recipe | None = None,
+    category: str | None = None,
+    name_hint: str = "",
 ) -> list[DeviceRecord]:
-    """Extract every device described by one product page."""
+    """Extract every device described by one product page.
+
+    ``category`` and ``name_hint`` come from how the page was reached — the vendor's
+    menu label above it and the link text pointing to it. On flat sites the URL has no
+    category segment at all, so the menu is the only place the vendor's taxonomy lives.
+    """
     tree = HTMLParser(html)
-    page_name = heading_title(tree)
+    page_name = clean_label(heading_title(tree)) or clean_variant_name(name_hint)
+    # Some h1s are taglines ("Step away from manual and repetitive work"). When the h1
+    # shares no word with what the vendor's own menu calls the page, the menu wins.
+    hint = clean_variant_name(name_hint)
+    hint_ok = bool(hint) and not _CTA_NAME.fullmatch(hint)
+    if _CTA_NAME.fullmatch(page_name or ""):
+        title = tree.css_first("title")
+        title_text = clean_variant_name(title.text(strip=True)) if title else ""
+        page_name = hint if hint_ok else (title_text or page_name)
+    glued = lambda t: re.sub(r"[^a-z0-9]", "", t.lower())
+    if hint_ok and page_name and not (_tokens(hint) & _tokens(page_name)) \
+            and glued(hint) not in glued(page_name):
+        page_name = hint
+    # Still a tagline and no usable menu name ("Step away from manual and repetitive
+    # work" on Tecan's Fluent Mix and Pierce page, reached via "Learn more"): the
+    # <title> names the page. It wins when the h1 shares no word with it.
+    title = tree.css_first("title")
+    title_head = clean_variant_name(title.text(strip=True)) if title else ""
+    content = lambda t: _tokens(t) - _STOPWORDS
+    if title_head and page_name and len(page_name.split()) >= 4 \
+            and not (content(title_head) & content(page_name)):
+        page_name = title_head
     description = _meta(tree, 'meta[name="description"]') or _meta(
         tree, 'meta[property="og:description"]'
     )
@@ -444,8 +837,19 @@ def extract_page(
                 datasheets.append(absolute)
 
     interfaces = detect_interfaces(html)
-    category = category_from_url(url, recipe)
+    category = clean_label(category or category_from_url(url, recipe))
     grid, provenance = find_spec_table(html, recipe)
+
+    # Text specifications under a spec heading beat a table found without one, and
+    # stand in when there is no table at all.
+    section: dict[str, str] = {}
+    if grid is None or provenance.startswith("validated-table"):
+        section, section_heading = spec_section_pairs(html, recipe)
+        table_attrs = len(to_spec_table(grid).attributes) if grid is not None else 0
+        if len(section) >= 3 and len(section) >= table_attrs:
+            grid, provenance = None, f"section:{section_heading}"
+        else:
+            section = {}
 
     common = dict(
         manufacturer=manufacturer,
@@ -457,6 +861,17 @@ def extract_page(
         interfaces=interfaces,
         spec_source=provenance,
     )
+
+    if section:
+        name = clean_variant_name(page_name) or url.rstrip("/").rsplit("/", 1)[-1]
+        return [
+            DeviceRecord(
+                product_id=product_id(manufacturer, url, name),
+                name=name,
+                specs=_specs_from(section),
+                **common,
+            )
+        ]
 
     if grid is None:
         # Thin pages still produce a device; losing them silently is worse than a row
@@ -473,6 +888,39 @@ def extract_page(
 
     orientation = recipe.spec_table_orientation if recipe else None
     spec_table = to_spec_table(grid, orientation)
+
+    # A multi-column table whose "devices" are not device names was read along the
+    # wrong axis, or compares options of one device. Try the other axis; failing that,
+    # keep every value as a spec of the single device the page is about.
+    if len(spec_table.entities) > 1 and not plausible_device_names(
+        spec_table.entities, page_name, name_hint
+    ):
+        flipped = to_spec_table(
+            grid,
+            "attribute_major" if spec_table.orientation == "variant_major" else "variant_major",
+        )
+        if plausible_device_names(flipped.entities, page_name, name_hint):
+            spec_table = flipped
+            common["spec_source"] = provenance + ":reoriented"
+        else:
+            flat = {
+                f"{attr} ({entity})": value
+                for entity, attrs in spec_table.records.items()
+                for attr, value in attrs.items()
+                if attr.strip() and value.strip()
+            }
+            common["spec_source"] = provenance + ":flattened"
+            name = clean_variant_name(page_name) or url.rstrip("/").rsplit("/", 1)[-1]
+            return [
+                DeviceRecord(
+                    product_id=product_id(manufacturer, url, name),
+                    name=name,
+                    specs=_specs_from(flat),
+                    warnings=["table axis did not name devices; kept as one device"],
+                    **common,
+                )
+            ]
+
     devices = group_devices(spec_table.records)
 
     # Name cleaning must never make two distinct devices indistinguishable. If it does,

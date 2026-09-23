@@ -134,3 +134,43 @@ def compare_naive(candidates: int, avg_page_bytes: int = 200_000,
     est = price(model, input_tokens, candidates * TOKENS_PER_VERDICT)
     est.basis = f"all {candidates} pages sent in full (~{avg_page_bytes // 1000}KB each)"
     return est
+
+
+def calibrated_estimate(runs_root, *, exclude: str | None = None) -> dict | None:
+    """What a new vendor is likely to cost, from what previous vendors *measurably* cost.
+
+    The old estimate multiplied a fixed escalation rate by a fixed digest size and was
+    wrong in both directions. This one reads every ``runs/*/ledger.jsonl`` on disk and
+    reports the median and range of real per-vendor spend. With no history it returns
+    ``None`` — saying "no basis for an estimate" beats inventing one.
+    """
+    import json
+    import statistics
+    from pathlib import Path
+
+    costs: list[float] = []
+    tokens: list[int] = []
+    vendors: list[str] = []
+    for ledger in Path(runs_root).glob("*/ledger.jsonl"):
+        if exclude and ledger.parent.name == exclude:
+            continue
+        rows = [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+        model = [r for r in rows if r.get("kind", "model") == "model"]
+        if not model:
+            continue
+        vendors.append(ledger.parent.name)
+        costs.append(sum(r.get("cost_usd", 0.0) for r in model))
+        tokens.append(sum(r.get("input_tokens", 0) + r.get("cache_read_tokens", 0)
+                          + r.get("cache_write_tokens", 0) + r.get("output_tokens", 0)
+                          for r in model))
+    if not costs:
+        return None
+    return {
+        "basis": f"measured model spend of {len(costs)} previous vendor runs",
+        "vendors": sorted(vendors),
+        "median_usd": round(statistics.median(costs), 3),
+        "min_usd": round(min(costs), 3),
+        "max_usd": round(max(costs), 3),
+        "median_tokens": int(statistics.median(tokens)),
+    }

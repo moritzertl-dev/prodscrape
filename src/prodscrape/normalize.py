@@ -88,6 +88,9 @@ class SpecValue:
     comparator: str | None = None
     values: list[float] = field(default_factory=list)
     text: str | None = None
+    # Where the value came from when it is not the product page itself, e.g.
+    # "datasheet:https://.../spark-datasheet.pdf". Absent means the page.
+    source: str | None = None
 
     def as_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v not in (None, [], "")}

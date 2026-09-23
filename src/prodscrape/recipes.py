@@ -67,6 +67,12 @@ class Recipe:
     spec_table_orientation: str | None = None
     inferred: bool = False
     notes: list[str] = field(default_factory=list)
+    # The scope decision (scope.ScopeDecision.as_dict()): menu-derived product pages,
+    # category hubs and catalogue branches. Present => candidates come from it and the
+    # include/leaf rules above are only a fallback for recipes written before it.
+    scope: dict | None = None
+    # Other registrable domains that carry part of this vendor's catalogue.
+    affiliated_domains: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -114,8 +120,10 @@ def load_recipe(domain: str) -> Recipe | None:
         order_headings=cls.get("order_headings", []),
         threshold=cls.get("threshold", 0.6),
         spec_table_orientation=ext.get("spec_table_orientation"),
-        inferred=False,
+        inferred=bool(raw.get("inferred", False)),
         notes=raw.get("open_questions", []) or [],
+        scope=raw.get("scope"),
+        affiliated_domains=raw.get("affiliated_domains", []) or [],
     )
 
 
@@ -145,6 +153,9 @@ def save_recipe(recipe: Recipe, path: Path | None = None) -> Path:
         },
         "extraction": {"spec_table_orientation": recipe.spec_table_orientation},
         "open_questions": recipe.notes,
+        "inferred": recipe.inferred,
+        "affiliated_domains": recipe.affiliated_domains,
+        "scope": recipe.scope,
     }
     path.write_text(
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8"

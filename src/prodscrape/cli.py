@@ -1,5 +1,6 @@
 """Command line entry point.
 
+    prodscrape run   <domain>            # everything, end to end, with a cost report
     prodscrape tree  <domain>            # stage 0-1 only: what does this site look like?
     prodscrape scan  <domain>            # stages 0-2: shortlist + classify
     prodscrape show  <domain>            # re-print the last run's summary
@@ -98,6 +99,26 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    """The whole vendor in one go — what the MCP `catalogue_vendor` tool runs."""
+    from .orchestrate import catalogue
+
+    result = catalogue(
+        args.domain,
+        manufacturer=args.manufacturer,
+        llm=args.llm,
+        budget_usd=args.budget,
+        limit=args.limit or None,
+        delay=args.delay,
+        pdfs=not args.no_pdfs,
+    )
+    print(result["report_to_user"])
+    if result["next_step"].startswith("call"):
+        print()
+        print(f"next: {result['next_step']}")
+    return 0
+
+
 def _cmd_paths(args: argparse.Namespace) -> int:
     """Show where artifacts are read from and written to."""
     for key, value in describe().items():
@@ -137,6 +158,20 @@ def main(argv: list[str] | None = None) -> int:
     p_extract.add_argument("domain")
     p_extract.add_argument("--manufacturer", default=None)
     p_extract.set_defaults(func=_cmd_extract)
+
+    p_run = sub.add_parser(
+        "run", help="everything: scope, crawl, classify, extract, datasheets, review, report"
+    )
+    p_run.add_argument("domain")
+    p_run.add_argument("--manufacturer", default=None)
+    p_run.add_argument("--llm", default=None,
+                       help="anthropic | claude-cli | agent | auto (default: auto)")
+    p_run.add_argument("--budget", type=float, default=1.0,
+                       help="model spend cap for this run in USD (default 1.0)")
+    p_run.add_argument("--limit", type=int, default=0,
+                       help="max pages to fetch; 0 means the default budget (400)")
+    p_run.add_argument("--no-pdfs", action="store_true", help="skip datasheet PDFs")
+    p_run.set_defaults(func=_cmd_run)
 
     p_paths = sub.add_parser("paths", help="show where artifacts and recipes live")
     p_paths.set_defaults(func=_cmd_paths)
