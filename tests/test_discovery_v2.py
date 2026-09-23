@@ -382,7 +382,8 @@ def test_background_job_states(tmp_path, monkeypatch):
     assert jobs.status("v.com")["state"] == "idle"
     log = run / "job.log"
     log.write_text("crawling\n", encoding="utf-8")
-    job = {"pid": 1, "started_at": _time.time(), "log": str(log)}
+    import os as _os
+    job = {"pid": _os.getpid(), "started_at": _time.time(), "log": str(log)}
     (run / "job.json").write_text(json.dumps(job), encoding="utf-8")
     jobs.Progress(run)("crawl", "10 pages fetched")
     assert jobs.status("v.com")["state"] == "running"
@@ -390,3 +391,28 @@ def test_background_job_states(tmp_path, monkeypatch):
     assert jobs.status("v.com")["state"] == "failed"
     (run / "catalogue_manifest.json").write_text("{}", encoding="utf-8")
     assert jobs.status("v.com")["state"] == "done"
+
+
+def test_a_vanished_process_is_reported_failed_not_running(tmp_path, monkeypatch):
+    import time as _time
+
+    from prodscrape import jobs
+
+    monkeypatch.setenv("PRODSCRAPE_HOME", str(tmp_path))
+    run = tmp_path / "runs" / "v.com"
+    run.mkdir(parents=True)
+    (run / "job.log").write_text("", encoding="utf-8")
+    monkeypatch.setattr(jobs, "process_alive", lambda pid: False)
+    job = {"pid": 424242, "started_at": _time.time(), "log": str(run / "job.log")}
+    (run / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    jobs.Progress(run)("scan", "deciding scope")
+    state = jobs.status("v.com")
+    assert state["state"] == "failed" and "exited without writing a result" in state["log_tail"]
+
+
+def test_process_alive_sees_this_process():
+    import os as _os
+
+    from prodscrape.jobs import process_alive
+
+    assert process_alive(_os.getpid()) is True

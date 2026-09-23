@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from .paths import home, runs_dir
+from .paths import home, runs_dir  # noqa: F401
 
 STALL_AFTER_S = 600
 WAIT_S = 40          # how long one tool call waits for news; stays under the 60 s limit
@@ -54,6 +54,36 @@ class Progress:
         os.replace(tmp, self.path)
 
 
+def process_alive(pid: int) -> bool | None:
+    """Whether a process is still running; None when that cannot be determined.
+
+    Never ``os.kill(pid, 0)`` on Windows — signal 0 there is CTRL_C_EVENT and would
+    interrupt the process instead of probing it.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(0x1000, False, pid)   # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            code = wintypes.DWORD()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            kernel32.CloseHandle(handle)
+            return bool(ok) and code.value == 259                # STILL_ACTIVE
+        except Exception:
+            return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return None
+
+
 def _read(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -73,8 +103,15 @@ def status(domain: str) -> dict:
         return {"state": "done", "job": job, "result": _read(manifest)}
     log = Path(job["log"])
     tail = log.read_text(encoding="utf-8", errors="replace")[-2000:] if log.exists() else ""
-    if "Traceback (most recent call last)" in tail:
+    if "Traceback (most recent call last)" in tail or "Fatal Python error" in tail:
         return {"state": "failed", "job": job, "log_tail": tail[-800:]}
+    # A process that is gone without writing a result died hard: killed from outside
+    # (e.g. the MCP host restarting) or a native crash. Say so at once — an INHECO run
+    # died this way and the status tool kept reporting "running" for minutes.
+    if process_alive(job["pid"]) is False:
+        return {"state": "failed", "job": job, "progress": progress,
+                "log_tail": (tail[-800:] or "(log empty)") + "\n[the run process exited "
+                            "without writing a result — killed or crashed]"}
     beat = progress.get("updated_at", job["started_at"])
     if time.time() - beat > STALL_AFTER_S:
         return {"state": "stalled", "job": job, "progress": progress,
@@ -92,8 +129,10 @@ def start(domain: str, *, manufacturer: str | None, llm: str | None, budget_usd:
     out = runs_dir() / domain
     out.mkdir(parents=True, exist_ok=True)
     log = out / "job.log"
-    cmd = [sys.executable, "-m", "prodscrape.cli", "run", domain,
-           "--budget", str(budget_usd)]
+    # -u: unbuffered, so the log is current; -X faulthandler: a native crash still
+    # leaves a stack trace in job.log instead of an empty file.
+    cmd = [sys.executable, "-u", "-X", "faulthandler", "-m", "prodscrape.cli", "run",
+           domain, "--budget", str(budget_usd)]
     if manufacturer:
         cmd += ["--manufacturer", manufacturer]
     if llm:
@@ -102,17 +141,32 @@ def start(domain: str, *, manufacturer: str | None, llm: str | None, budget_usd:
         cmd += ["--limit", str(limit)]
     env = dict(os.environ, PRODSCRAPE_HOME=str(home()), PYTHONIOENCODING="utf-8")
     kwargs: dict = {}
+    base_flags = 0
     if os.name == "nt":
-        kwargs["creationflags"] = (subprocess.DETACHED_PROCESS
-                                   | subprocess.CREATE_NEW_PROCESS_GROUP
-                                   | subprocess.CREATE_NO_WINDOW)
+        base_flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                      | subprocess.CREATE_NO_WINDOW)
     else:
         kwargs["start_new_session"] = True
     started = time.time()
     with log.open("w", encoding="utf-8") as fh:
-        proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=env, **kwargs)
-    job = {"pid": proc.pid, "started_at": started, "started": _now(), "cmd": cmd[3:],
+        proc = None
+        if os.name == "nt":
+            # Leave the host's job object, so the run survives the MCP server being
+            # restarted or closed. Not every job allows that; then run inside it.
+            for flags in (base_flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, base_flags):
+                try:
+                    proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
+                                            stdin=subprocess.DEVNULL, env=env,
+                                            creationflags=flags)
+                    break
+                except OSError:
+                    continue
+        else:
+            proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env=env, **kwargs)
+        if proc is None:
+            raise RuntimeError("could not start the background run")
+    job = {"pid": proc.pid, "started_at": started, "started": _now(), "cmd": cmd[6:],
            "log": str(log)}
     (out / "job.json").write_text(json.dumps(job, indent=2), encoding="utf-8")
     Progress(out)("starting", "background run launched")
